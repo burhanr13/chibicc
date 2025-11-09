@@ -407,8 +407,10 @@ static void run_subprocess(char **argv) {
   // Wait for the child process to finish.
   int status;
   while (wait(&status) > 0);
-  if (status != 0)
+  if (status != 0) {
+    fprintf(stderr, "error %d from subprocess\n", WTERMSIG(status));
     exit(1);
+  }
 }
 
 static void run_cc1(int argc, char **argv, char *input, char *output) {

@@ -1,5 +1,7 @@
 #include "chibicc.h"
 
+#define PTR_SIZE 4
+
 Type *ty_void = &(Type){TY_VOID, 1, 1};
 Type *ty_bool = &(Type){TY_BOOL, 1, 1};
 
@@ -95,7 +97,7 @@ Type *copy_type(Type *ty) {
 }
 
 Type *pointer_to(Type *base) {
-  Type *ty = new_type(TY_PTR, 8, 8);
+  Type *ty = new_type(TY_PTR, PTR_SIZE, PTR_SIZE);
   ty->base = base;
   ty->is_unsigned = true;
   return ty;
@@ -117,7 +119,7 @@ Type *array_of(Type *base, int len) {
 }
 
 Type *vla_of(Type *base, Node *len) {
-  Type *ty = new_type(TY_VLA, 8, 8);
+  Type *ty = new_type(TY_VLA, PTR_SIZE, PTR_SIZE);
   ty->base = base;
   ty->vla_len = len;
   return ty;

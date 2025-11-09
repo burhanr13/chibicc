@@ -1,0 +1,10 @@
+BasedOnStyle: LLVM
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: Empty
+SpaceAfterCStyleCast: true
+SortIncludes: true
+AccessModifierOffset: -4
+ColumnLimit: 80
+BreakAfterAttributes: Leave
+

@@ -8,3 +8,6 @@
 /chibicc
 /test/*.exe
 /stage2
+
+.cache
+compile_commands.json
