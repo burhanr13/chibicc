@@ -3,7 +3,10 @@
 #include "chibicc.h"
 
 typedef enum {
+  // constants
   IR_CONST,
+  IR_GLOBALPTR,
+  IR_LOCALPTR,
   // binary ops
   IR_ADD,
   IR_SUB,
@@ -22,7 +25,7 @@ typedef enum {
   IR_NEG,
   IR_NOT,
   // extension
-  IR_ZEXT,
+  IR_UEXT,
   IR_SEXT,
   // bitfield
   IR_UBFE,
@@ -35,18 +38,18 @@ typedef enum {
   IR_SLE,
   IR_ULT,
   IR_ULE,
-  // branches
-  IR_JP,
-  IR_BR,
+  // call
   IR_CALL,
-  IR_RET,
-  // variables
-  IR_GLOBALPTR,
-  IR_LOCALPTR,
+  // variables/memory/constant
   IR_ULOAD,
   IR_SLOAD,
   IR_STORE,
   IR_MEMCPY,
+  // terminators
+  IR_JP,
+  IR_BR,
+  IR_SWITCH,
+  IR_RET,
 
   IR_MAX
 } IROpc;
@@ -55,48 +58,53 @@ typedef struct IRLocal IRLocal;
 typedef struct IRLocal {
   IRLocal *next;
   int id;
-  Obj* obj;
+  Obj *obj;
 } IRLocal;
 
-typedef struct IRBlock IRBlock;
+enum {
+  IRV_INSTR,
+  IRV_BLOCK,
+};
 
-typedef struct IRInst IRInst;
-typedef struct IRInst {
-  IRInst *next;
-  IRInst *prev;
-  IRInst *nextarg;
-  IROpc opc;
+typedef struct {
+  int vt;
   int id;
-  IRInst *ops[2];
-  IRBlock *blocks[2];
-  Obj *gvar;
-  IRLocal *lvar;
-  uint64_t val;
-  int bf_start;
-  int bf_len;
-  int mem_size;
-
   bool visited;
-} IRInst;
+} IRValue;
+
+typedef struct IRInstr IRInstr;
+typedef struct IRInstr {
+  IRValue hdr;
+  IRInstr *next;
+  IRInstr *prev;
+  IROpc opc;
+  int numops;
+  int size; // used for load/store/ext
+  union {
+    uint64_t cval;
+    Obj *gvar;
+    IRLocal *lvar;
+    IRValue **ops;
+  };
+} IRInstr;
 
 typedef struct IRBlock {
-  int id;
-  IRInst *first;
-  IRInst *last;
+  IRValue hdr;
+  IRInstr *first;
+  IRInstr *last;
   bool terminated;
-
-  bool visited;
 } IRBlock;
 
 typedef struct IRFunction IRFunction;
 typedef struct IRFunction {
   IRFunction *next;
-  IRLocal* locals;
+  IRLocal *locals;
   IRBlock *entry;
   Obj *obj;
+  int vctr;
 } IRFunction;
 
 typedef struct {
   IRFunction *funs;
-  Obj* obj;
+  Obj *obj;
 } IRProgram;
