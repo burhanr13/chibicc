@@ -145,6 +145,7 @@ struct Obj {
   bool is_function;
   bool is_definition;
   bool is_static;
+  bool is_string_literal;
 
   // Global variable
   bool is_tentative;

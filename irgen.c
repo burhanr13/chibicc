@@ -11,20 +11,7 @@ static IRBlock *new_block() {
 }
 
 static void add_instr(IRInstr *i) {
-  if (cur_block->terminated) {
-    free(i);
-    return;
-  }
-  if (!cur_block->first) {
-    cur_block->first = i;
-    cur_block->last = i;
-  } else {
-    cur_block->last->next = i;
-    i->prev = cur_block->last;
-    cur_block->last = i;
-  }
-  if (i->opc >= IR_JP)
-    cur_block->terminated = true;
+  ir_add_instr(cur_block, i);
 }
 
 static IRInstr *new_instr(int numops) {
@@ -34,6 +21,11 @@ static IRInstr *new_instr(int numops) {
   i->numops = numops;
   i->ops = calloc(numops, sizeof(IRValue *));
   return i;
+}
+
+static void ir_set_op(IRInstr *i, int op, IRValue *v) {
+  i->ops[op] = v;
+  ir_add_user(v, (IRValue *) i);
 }
 
 static IRInstr *ir_const(uint64_t val) {
@@ -46,15 +38,15 @@ static IRInstr *ir_const(uint64_t val) {
 static IRInstr *ir_unary(IROpc opc, IRInstr *lhs) {
   IRInstr *i = new_instr(1);
   i->opc = opc;
-  i->ops[0] = (IRValue *) lhs;
+  ir_set_op(i, 0, (IRValue *) lhs);
   return i;
 }
 
 static IRInstr *ir_binary(IROpc opc, IRInstr *lhs, IRInstr *rhs) {
   IRInstr *i = new_instr(2);
   i->opc = opc;
-  i->ops[0] = (IRValue *) lhs;
-  i->ops[1] = (IRValue *) rhs;
+  ir_set_op(i, 0, (IRValue *) lhs);
+  ir_set_op(i, 1, (IRValue *) rhs);
   return i;
 }
 
@@ -63,6 +55,7 @@ static IRInstr *ir_varptr(Obj *var) {
   if (var->is_local) {
     i->opc = IR_LOCALPTR;
     i->lvar = var->irlocal;
+    var->irlocal->numuses++;
   } else {
     i->opc = IR_GLOBALPTR;
     i->gvar = var;
@@ -80,7 +73,7 @@ static IRInstr *ir_load(Type *ty, IRInstr *addr) {
   }
   IRInstr *i = new_instr(1);
   i->opc = ty->is_unsigned ? IR_ULOAD : IR_SLOAD;
-  i->ops[0] = (IRValue *) addr;
+  ir_set_op(i, 0, (IRValue *) addr);
   i->size = ty->size;
   return i;
 }
@@ -92,8 +85,8 @@ static IRInstr *ir_store(Type *ty, IRInstr *addr, IRInstr *data) {
   case TY_UNION: i->opc = IR_MEMCPY; break;
   default: i->opc = IR_STORE; break;
   }
-  i->ops[0] = (IRValue *) addr;
-  i->ops[1] = (IRValue *) data;
+  ir_set_op(i, 0, (IRValue *) addr);
+  ir_set_op(i, 1, (IRValue *) data);
   i->size = ty->size;
   return i;
 }
@@ -102,14 +95,14 @@ static IRInstr *ir_bitfield(IROpc opc, IRInstr *src, IRInstr *dst, int start,
                             int len) {
   IRInstr *i = new_instr(opc == IR_BFI ? 4 : 3);
   i->opc = opc;
-  i->ops[0] = (IRValue *) src;
+  ir_set_op(i, 0, (IRValue *) src);
   if (opc == IR_BFI) {
-    i->ops[1] = (IRValue *) dst;
-    i->ops[2] = (IRValue *) ir_const(start);
-    i->ops[3] = (IRValue *) ir_const(len);
+    ir_set_op(i, 1, (IRValue *) dst);
+    ir_set_op(i, 2, (IRValue *) ir_const(start));
+    ir_set_op(i, 3, (IRValue *) ir_const(len));
   } else {
-    i->ops[1] = (IRValue *) ir_const(start);
-    i->ops[2] = (IRValue *) ir_const(len);
+    ir_set_op(i, 1, (IRValue *) ir_const(start));
+    ir_set_op(i, 2, (IRValue *) ir_const(len));
   }
   return i;
 }
@@ -120,15 +113,17 @@ static IRInstr *ir_cast(IRInstr *src, Type *from, Type *to) {
   IRInstr *i = new_instr(1);
   i->opc = from->is_unsigned ? IR_UEXT : IR_SEXT;
   i->size = from->size;
-  i->ops[0] = (IRValue *) src;
+  ir_set_op(i, 0, (IRValue *) src);
   return i;
 }
 
 static IRInstr *ir_call(IRInstr *f, int nargs, IRInstr **args) {
   IRInstr *i = new_instr(1 + nargs);
   i->opc = IR_CALL;
-  i->ops[0] = (IRValue *) f;
-  memcpy(&i->ops[1], args, nargs * sizeof(IRInstr *));
+  ir_set_op(i, 0, (IRValue *) f);
+  for (int a = 0; a < nargs; a++) {
+    ir_set_op(i, 1 + a, (IRValue *) args[a]);
+  }
   return i;
 }
 
@@ -136,23 +131,23 @@ static IRInstr *ir_ret(IRInstr *lhs) {
   IRInstr *i = new_instr(lhs ? 1 : 0);
   i->opc = IR_RET;
   if (lhs)
-    i->ops[0] = (IRValue *) lhs;
+    ir_set_op(i, 0, (IRValue *) lhs);
   return i;
 }
 
 static IRInstr *ir_branch(IRInstr *cond, IRBlock *bt, IRBlock *bf) {
   IRInstr *i = new_instr(3);
   i->opc = IR_BR;
-  i->ops[0] = (IRValue *) cond;
-  i->ops[1] = (IRValue *) bt;
-  i->ops[2] = (IRValue *) bf;
+  ir_set_op(i, 0, (IRValue *) cond);
+  ir_set_op(i, 1, (IRValue *) bt);
+  ir_set_op(i, 2, (IRValue *) bf);
   return i;
 }
 
 static IRInstr *ir_jump(IRBlock *dst) {
   IRInstr *i = new_instr(1);
   i->opc = IR_JP;
-  i->ops[0] = (IRValue *) dst;
+  ir_set_op(i, 0, (IRValue *) dst);
   return i;
 }
 
@@ -369,6 +364,11 @@ static IRFunction *gen_function(Obj *f) {
     *local = new_irlocal(v);
     local = &(*local)->next;
   }
+  if (f->params)
+    fun->params = f->params->irlocal;
+  for (IRLocal *p = fun->params; p; p = p->next) {
+    p->is_param = true;
+  }
 
   fun->entry = new_block();
   cur_block = fun->entry;
@@ -382,105 +382,10 @@ IRProgram *irgen(Obj *p) {
   prog->obj = p;
   IRFunction **f = &prog->funs;
   for (Obj *o = p; o; o = o->next) {
-    if (!o->is_definition)
+    if (!o->is_function || !o->is_definition || !o->is_live)
       continue;
-    if (o->is_function) {
-      *f = gen_function(o);
-      f = &(*f)->next;
-    }
+    *f = gen_function(o);
+    f = &(*f)->next;
   }
   return prog;
-}
-
-void ir_clear_visited(IRValue *v) {
-  if (!v->visited)
-    return;
-  v->visited = false;
-  if (v->vt == IRV_INSTR) {
-    IRInstr *i = (IRInstr *) v;
-    for (int o = 0; o < i->numops; o++)
-      ir_clear_visited(i->ops[o]);
-  } else if (v->vt == IRV_BLOCK) {
-    IRBlock *b = (IRBlock *) v;
-    for (IRInstr *i = b->first; i; i = i->next) {
-      ir_clear_visited((IRValue *) i);
-    }
-  }
-}
-
-const char *ir_opc_names[IR_MAX] = {
-    "const", "globalptr", "localptr", "add",   "sub",   "mul",    "sdiv",
-    "smod",  "udiv",      "umod",     "and",   "or",    "xor",    "sll",
-    "srl",   "sra",       "neg",      "not",   "uext",  "sext",   "ubfe",
-    "sbfe",  "bfi",       "eq",       "ne",    "slt",   "sle",    "ult",
-    "ule",   "call",      "uload",    "sload", "store", "memcpy", "jp",
-    "br",    "switch",    "ret",
-};
-
-#define P(fmt, ...) fprintf(out, fmt "\n" __VA_OPT__(, ) __VA_ARGS__)
-#define I(fmt, ...) fprintf(out, fmt __VA_OPT__(, ) __VA_ARGS__)
-
-void irprint_v(IRValue *v, FILE *out) {
-  if (v->visited)
-    return;
-  v->visited = true;
-  if (v->vt == IRV_INSTR) {
-    IRInstr *i = (IRInstr *) v;
-    for (int o = 0; o < i->numops; o++) {
-      if (i->ops[o]->vt == IRV_INSTR)
-        irprint_v(i->ops[o], out);
-    }
-
-    I("  ");
-    if (i->opc < IR_STORE)
-      I("%%%d = ", i->hdr.id);
-    I("%s ", ir_opc_names[i->opc]);
-    for (int o = 0; o < i->numops; o++) {
-      I("%%%d ", i->ops[o]->id);
-    }
-
-    switch (i->opc) {
-    case IR_CONST: I("%ld", i->cval); break;
-    case IR_GLOBALPTR: I("%%%s", i->gvar->name); break;
-    case IR_LOCALPTR: I("%%%d", i->lvar->id); break;
-    case IR_UEXT:
-    case IR_SEXT:
-    case IR_ULOAD:
-    case IR_SLOAD:
-    case IR_STORE:
-    case IR_MEMCPY: I("%d", i->size); break;
-    }
-
-    I("\n");
-
-    for (int o = 0; o < i->numops; o++) {
-      if (i->ops[o]->vt == IRV_BLOCK)
-        irprint_v(i->ops[o], out);
-    }
-  } else if (v->vt == IRV_BLOCK) {
-    IRBlock *b = (IRBlock *) v;
-    P("B%d:", b->hdr.id);
-    for (IRInstr *i = b->first; i; i = i->next) {
-      irprint_v((IRValue *) i, out);
-    }
-  }
-}
-
-void irprint(IRProgram *p, FILE *out) {
-  for (IRFunction *f = p->funs; f; f = f->next) {
-    P("\nfunction%s %s", f->obj->is_static ? " static" : "", f->obj->name);
-    for (IRLocal *v = f->locals; v; v = v->next) {
-      P("local %%%d (%s) %d %d", v->id, v->obj->name, v->obj->ty->size,
-        v->obj->align);
-    }
-    ir_clear_visited((IRValue *) f->entry);
-    irprint_v((IRValue *) f->entry, out);
-  }
-}
-
-#undef P
-#undef I
-
-void codegen(Obj *prog, FILE *out) {
-  irprint(irgen(prog), out);
 }

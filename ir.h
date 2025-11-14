@@ -55,25 +55,40 @@ typedef enum {
 } IROpc;
 
 typedef struct IRLocal IRLocal;
-typedef struct IRLocal {
+struct IRLocal {
   IRLocal *next;
   int id;
+  int numuses;
+  int offset;
+  bool is_param;
   Obj *obj;
-} IRLocal;
+};
 
 enum {
   IRV_INSTR,
   IRV_BLOCK,
 };
 
-typedef struct {
+typedef struct IRValue IRValue;
+
+typedef struct IRUser IRUser;
+struct IRUser {
+  IRUser *next;
+  IRValue *user;
+};
+
+struct IRValue {
   int vt;
   int id;
   bool visited;
-} IRValue;
+  int numuses;
+  IRUser *uses;
+};
 
 typedef struct IRInstr IRInstr;
-typedef struct IRInstr {
+typedef struct IRBlock IRBlock;
+
+struct IRInstr {
   IRValue hdr;
   IRInstr *next;
   IRInstr *prev;
@@ -85,26 +100,46 @@ typedef struct IRInstr {
     Obj *gvar;
     IRLocal *lvar;
     IRValue **ops;
+    IRInstr **iops;
+    IRBlock **bops;
   };
-} IRInstr;
+  // for codegen
+  int curloc;
+  int curuses;
+};
 
-typedef struct IRBlock {
+struct IRBlock {
   IRValue hdr;
   IRInstr *first;
   IRInstr *last;
-  bool terminated;
-} IRBlock;
+
+  IRBlock *rpo_next;
+};
 
 typedef struct IRFunction IRFunction;
-typedef struct IRFunction {
+struct IRFunction {
   IRFunction *next;
   IRLocal *locals;
+  IRLocal *params;
   IRBlock *entry;
   Obj *obj;
   int vctr;
-} IRFunction;
+  int stacksize;
+};
 
 typedef struct {
   IRFunction *funs;
   Obj *obj;
 } IRProgram;
+
+void ir_add_instr(IRBlock *b, IRInstr *i);
+void ir_remove_instr(IRBlock *b, IRInstr *i);
+void ir_add_user(IRValue *v, IRValue *u);
+void ir_remove_user(IRValue *v, IRValue *u);
+void ir_begin_pass(IRValue *v);
+void ir_setup_rpo(IRBlock *b);
+
+IRProgram *irgen(Obj *p);
+void irprint(IRProgram *p, FILE *out);
+void ircodegen(IRProgram *p, FILE *out);
+

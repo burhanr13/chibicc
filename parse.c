@@ -326,7 +326,7 @@ static Obj *new_gvar(char *name, Type *ty) {
 
 static char *new_unique_name(void) {
   static int id = 0;
-  return format(".L..%d", id++);
+  return format("__L%d", id++);
 }
 
 static Obj *new_anon_gvar(Type *ty) {
@@ -336,6 +336,7 @@ static Obj *new_anon_gvar(Type *ty) {
 static Obj *new_string_literal(char *p, Type *ty) {
   Obj *var = new_anon_gvar(ty);
   var->init_data = p;
+  var->is_string_literal = true;
   return var;
 }
 
