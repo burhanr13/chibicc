@@ -50,20 +50,20 @@ static bool take_arg(char *arg) {
   return false;
 }
 
-static void add_default_include_paths(char *argv0) {
-  // We expect that chibicc-specific include files are installed
-  // to ./include relative to argv[0].
-  strarray_push(&include_paths, format("%s/include", dirname(strdup(argv0))));
+// static void add_default_include_paths(char *argv0) {
+//   // We expect that chibicc-specific include files are installed
+//   // to ./include relative to argv[0].
+//   strarray_push(&include_paths, format("%s/include", dirname(strdup(argv0))));
 
-  // Add standard include paths.
-  strarray_push(&include_paths, "/usr/local/include");
-  strarray_push(&include_paths, "/usr/include/x86_64-linux-gnu");
-  strarray_push(&include_paths, "/usr/include");
+//   // Add standard include paths.
+//   strarray_push(&include_paths, "/usr/local/include");
+//   strarray_push(&include_paths, "/usr/include/x86_64-linux-gnu");
+//   strarray_push(&include_paths, "/usr/include");
 
-  // Keep a copy of the standard include paths for -MMD option.
-  for (int i = 0; i < include_paths.len; i++)
-    strarray_push(&std_include_paths, include_paths.data[i]);
-}
+//   // Keep a copy of the standard include paths for -MMD option.
+//   for (int i = 0; i < include_paths.len; i++)
+//     strarray_push(&std_include_paths, include_paths.data[i]);
+// }
 
 static void define(char *str) {
   char *eq = strchr(str, '=');
@@ -705,7 +705,7 @@ int main(int argc, char **argv) {
   parse_args(argc, argv);
 
   if (opt_cc1) {
-    add_default_include_paths(argv[0]);
+    // add_default_include_paths(argv[0]);
     cc1();
     return 0;
   }
