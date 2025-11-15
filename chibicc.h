@@ -23,6 +23,8 @@
 #define MAX(x, y) ((x) < (y) ? (y) : (x))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 
+#define PTR_SIZE 4
+
 #ifndef __GNUC__
 #define __attribute__(x)
 #endif

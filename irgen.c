@@ -108,10 +108,13 @@ static IRInstr *ir_bitfield(IROpc opc, IRInstr *src, IRInstr *dst, int start,
 }
 
 static IRInstr *ir_cast(IRInstr *src, Type *from, Type *to) {
-  if (from->size >= to->size)
+  if (from->size >= to->size || from->kind == TY_ARRAY)
     return src;
   IRInstr *i = new_instr(1);
   i->opc = from->is_unsigned ? IR_UEXT : IR_SEXT;
+  if (from->size == 3) {
+    printf("wtf\n");
+  }
   i->size = from->size;
   ir_set_op(i, 0, (IRValue *) src);
   return i;

@@ -1057,6 +1057,8 @@ static char *format_time(struct tm *tm) {
   return format("\"%02d:%02d:%02d\"", tm->tm_hour, tm->tm_min, tm->tm_sec);
 }
 
+#define STRINGIFY(x) #x
+
 void init_macros(void) {
   // Define predefined macros
   define_macro("_LP64", "1");
@@ -1068,11 +1070,11 @@ void init_macros(void) {
   define_macro("__SIZEOF_INT__", "4");
   define_macro("__SIZEOF_LONG_DOUBLE__", "8");
   define_macro("__SIZEOF_LONG_LONG__", "8");
-  define_macro("__SIZEOF_LONG__", "8");
-  define_macro("__SIZEOF_POINTER__", "8");
-  define_macro("__SIZEOF_PTRDIFF_T__", "8");
+  define_macro("__SIZEOF_LONG__", STRINGIFY(PTR_SIZE));
+  define_macro("__SIZEOF_POINTER__", STRINGIFY(PTR_SIZE));
+  define_macro("__SIZEOF_PTRDIFF_T__", STRINGIFY(PTR_SIZE));
   define_macro("__SIZEOF_SHORT__", "2");
-  define_macro("__SIZEOF_SIZE_T__", "8");
+  define_macro("__SIZEOF_SIZE_T__", STRINGIFY(PTR_SIZE));
   define_macro("__SIZE_TYPE__", "unsigned long");
   define_macro("__STDC_HOSTED__", "1");
   define_macro("__STDC_NO_COMPLEX__", "1");
@@ -1082,23 +1084,23 @@ void init_macros(void) {
   define_macro("__STDC__", "1");
   define_macro("__USER_LABEL_PREFIX__", "");
   define_macro("__alignof__", "_Alignof");
-  define_macro("__amd64", "1");
-  define_macro("__amd64__", "1");
+  // define_macro("__amd64", "1");
+  // define_macro("__amd64__", "1");
   define_macro("__chibicc__", "1");
   define_macro("__const__", "const");
-  define_macro("__gnu_linux__", "1");
+  // define_macro("__gnu_linux__", "1");
   define_macro("__inline__", "inline");
-  define_macro("__linux", "1");
-  define_macro("__linux__", "1");
+  // define_macro("__linux", "1");
+  // define_macro("__linux__", "1");
   define_macro("__signed__", "signed");
   define_macro("__typeof__", "typeof");
-  define_macro("__unix", "1");
-  define_macro("__unix__", "1");
+  // define_macro("__unix", "1");
+  // define_macro("__unix__", "1");
   define_macro("__volatile__", "volatile");
-  define_macro("__x86_64", "1");
-  define_macro("__x86_64__", "1");
-  define_macro("linux", "1");
-  define_macro("unix", "1");
+  // define_macro("__x86_64", "1");
+  // define_macro("__x86_64__", "1");
+  // define_macro("linux", "1");
+  // define_macro("unix", "1");
 
   add_builtin("__FILE__", file_macro);
   add_builtin("__LINE__", line_macro);

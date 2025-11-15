@@ -336,7 +336,7 @@ static void gen_i(IRInstr *i) {
     gen_i(i->iops[0]);
     use_i(i->iops[0]);
     alloc_i(i);
-    if (i->size == 4)
+    if (i->size >= 4)
       gen_mov(i->curloc, i->iops[0]->curloc);
     else
       I("%sx%s %s, %s", i->opc == IR_UEXT ? "u" : "s", SIZE_SUFFIX(i->size),
