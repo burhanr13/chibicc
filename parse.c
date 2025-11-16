@@ -404,6 +404,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
   Type *ty = ty_int;
   int counter = 0;
   bool is_atomic = false;
+  bool is_volatile = false;
 
   while (is_typename(tok)) {
     // Handle storage class specifiers.
@@ -435,11 +436,17 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     }
 
     // These keywords are recognized but ignored.
-    if (consume(&tok, tok, "const") || consume(&tok, tok, "volatile") ||
-        consume(&tok, tok, "auto") || consume(&tok, tok, "register") ||
-        consume(&tok, tok, "restrict") || consume(&tok, tok, "__restrict") ||
+    if (consume(&tok, tok, "const") || consume(&tok, tok, "auto") ||
+        consume(&tok, tok, "register") || consume(&tok, tok, "restrict") ||
+        consume(&tok, tok, "__restrict") ||
         consume(&tok, tok, "__restrict__") || consume(&tok, tok, "_Noreturn"))
       continue;
+
+    if (equal(tok, "volatile")) {
+      tok = tok->next;
+      is_volatile = true;
+      continue;
+    }
 
     if (equal(tok, "_Atomic")) {
       tok = tok->next;
@@ -553,6 +560,10 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
   if (is_atomic) {
     ty = copy_type(ty);
     ty->is_atomic = true;
+  }
+  if (is_volatile) {
+    ty = copy_type(ty);
+    ty->is_volatile = true;
   }
 
   *rest = tok;
@@ -2080,6 +2091,14 @@ static Node *to_assign(Node *binary) {
   }
 
   // Convert `A op= B` to ``tmp = &A, *tmp = *tmp op B`.
+
+  // optimize special case when A is a var
+  if (binary->lhs->kind == ND_VAR) {
+    return new_binary(ND_ASSIGN, binary->lhs,
+                      new_binary(binary->kind, binary->lhs, binary->rhs, tok),
+                      tok);
+  }
+
   Obj *var = new_lvar("", pointer_to(binary->lhs->ty));
 
   Node *expr1 = new_binary(ND_ASSIGN, new_var_node(var, tok),

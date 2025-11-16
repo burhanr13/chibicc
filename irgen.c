@@ -68,7 +68,7 @@ static IRInstr *ir_load(Type *ty, IRInstr *addr) {
   case TY_VLA: return addr;
   }
   IRInstr *i = new_instr(1);
-  i->opc = ty->is_unsigned ? IR_ULOAD : IR_SLOAD;
+  i->opc = IR_LOAD;
   ir_set_op(i, 0, (IRValue *) addr);
   i->size = ty->size;
   return i;

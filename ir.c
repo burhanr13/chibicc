@@ -156,11 +156,11 @@ BPASS_BEGIN(setup_rpo, IRBlock **res) {
 BPASS_END(setup_rpo, &(IRBlock *) {f->exit})
 
 const char *ir_opc_names[IR_MAX] = {
-    "const", "globalptr", "localptr", "add",  "sub",  "mul",    "sdiv", "smod",
-    "udiv",  "umod",      "and",      "or",   "xor",  "sll",    "srl",  "sra",
-    "neg",   "not",       "uext",     "sext", "ubfe", "sbfe",   "bfi",  "eq",
-    "ne",    "slt",       "sle",      "ult",  "ule",  "call",   "ret",  "uload",
-    "sload", "store",     "memcpy",   "jp",   "br",   "switch",
+    "const", "globalptr", "localptr", "add",  "sub",  "mul",  "sdiv", "smod",
+    "udiv",  "umod",      "and",      "or",   "xor",  "sll",  "srl",  "sra",
+    "neg",   "not",       "uext",     "sext", "ubfe", "sbfe", "bfi",  "eq",
+    "ne",    "slt",       "sle",      "ult",  "ule",  "call", "ret",  "load",
+    "store", "memcpy",    "jp",       "br",
 };
 
 #define P(fmt, ...) fprintf(out, fmt "\n" __VA_OPT__(, ) __VA_ARGS__)
@@ -191,8 +191,7 @@ void irprint_v(IRValue *v, FILE *out) {
     case IR_LOCALPTR: I("%%%d", i->lvar->id); break;
     case IR_UEXT:
     case IR_SEXT:
-    case IR_ULOAD:
-    case IR_SLOAD:
+    case IR_LOAD:
     case IR_STORE:
     case IR_MEMCPY: I("%d", i->size); break;
     }

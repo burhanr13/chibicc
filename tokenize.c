@@ -25,8 +25,8 @@ void error(char *fmt, ...) {
 //
 // foo.c:10: x = y + 1;
 //               ^ <error message here>
-static void verror_at(char *filename, char *input, int line_no,
-                      char *loc, char *fmt, va_list ap) {
+static void verror_at(char *filename, char *input, int line_no, char *loc,
+                      char *fmt, va_list ap) {
   // Find a line containing `loc`.
   char *line = loc;
   while (input < line && line[-1] != '\n')
@@ -38,7 +38,7 @@ static void verror_at(char *filename, char *input, int line_no,
 
   // Print out the line.
   int indent = fprintf(stderr, "%s:%d: ", filename, line_no);
-  fprintf(stderr, "%.*s\n", (int)(end - line), line);
+  fprintf(stderr, "%.*s\n", (int) (end - line), line);
 
   // Show the error message.
   int pos = display_width(line, loc - line) + indent;
@@ -64,19 +64,23 @@ void error_at(char *loc, char *fmt, ...) {
 void error_tok(Token *tok, char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt, ap);
+  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt,
+            ap);
   exit(1);
 }
 
 void warn_tok(Token *tok, char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt, ap);
+  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt,
+            ap);
   va_end(ap);
 }
 
 // Consumes the current token if it matches `op`.
 bool equal(Token *tok, char *op) {
+  if (tok->len != strlen(op))
+    return false;
   return memcmp(tok->loc, op, tok->len) == 0 && op[tok->len] == '\0';
 }
 
@@ -143,9 +147,8 @@ static int from_hex(char c) {
 // Read a punctuator token from p and returns its length.
 static int read_punct(char *p) {
   static char *kw[] = {
-    "<<=", ">>=", "...", "==", "!=", "<=", ">=", "->", "+=",
-    "-=", "*=", "/=", "++", "--", "%=", "&=", "|=", "^=", "&&",
-    "||", "<<", ">>", "##",
+      "<<=", ">>=", "...", "==", "!=", "<=", ">=", "->", "+=", "-=", "*=", "/=",
+      "++",  "--",  "%=",  "&=", "|=", "^=", "&&", "||", "<<", ">>", "##",
   };
 
   for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
@@ -160,18 +163,25 @@ static bool is_keyword(Token *tok) {
 
   if (map.capacity == 0) {
     static char *kw[] = {
-      "return", "if", "else", "for", "while", "int", "sizeof", "char",
-      "struct", "union", "short", "long", "void", "typedef", "_Bool",
-      "enum", "static", "goto", "break", "continue", "switch", "case",
-      "default", "extern", "_Alignof", "_Alignas", "do", "signed",
-      "unsigned", "const", "volatile", "auto", "register", "restrict",
-      "__restrict", "__restrict__", "_Noreturn", "float", "double",
-      "typeof", "asm", "_Thread_local", "__thread", "_Atomic",
-      "__attribute__",
+        "return",    "if",         "else",
+        "for",       "while",      "int",
+        "sizeof",    "char",       "struct",
+        "union",     "short",      "long",
+        "void",      "typedef",    "_Bool",
+        "enum",      "static",     "goto",
+        "break",     "continue",   "switch",
+        "case",      "default",    "extern",
+        "_Alignof",  "_Alignas",   "do",
+        "signed",    "unsigned",   "const",
+        "volatile",  "auto",       "register",
+        "restrict",  "__restrict", "__restrict__",
+        "_Noreturn", "float",      "double",
+        "typeof",    "asm",        "_Thread_local",
+        "__thread",  "_Atomic",    "__attribute__",
     };
 
     for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
-      hashmap_put(&map, kw[i], (void *)1);
+      hashmap_put(&map, kw[i], (void *) 1);
   }
 
   return hashmap_get2(&map, tok->loc, tok->len);
@@ -292,7 +302,7 @@ static Token *read_utf16_string_literal(char *start, char *quote) {
 
   Token *tok = new_token(TK_STR, start, end + 1);
   tok->ty = array_of(ty_ushort, len + 1);
-  tok->str = (char *)buf;
+  tok->str = (char *) buf;
   return tok;
 }
 
@@ -314,7 +324,7 @@ static Token *read_utf32_string_literal(char *start, char *quote, Type *ty) {
 
   Token *tok = new_token(TK_STR, start, end + 1);
   tok->ty = array_of(ty, len + 1);
-  tok->str = (char *)buf;
+  tok->str = (char *) buf;
   return tok;
 }
 
@@ -360,9 +370,8 @@ static bool convert_pp_int(Token *tok) {
   bool l = false;
   bool u = false;
 
-  if (startswith(p, "LLU") || startswith(p, "LLu") ||
-      startswith(p, "llU") || startswith(p, "llu") ||
-      startswith(p, "ULL") || startswith(p, "Ull") ||
+  if (startswith(p, "LLU") || startswith(p, "LLu") || startswith(p, "llU") ||
+      startswith(p, "llu") || startswith(p, "ULL") || startswith(p, "Ull") ||
       startswith(p, "uLL") || startswith(p, "ull")) {
     p += 3;
     l = u = true;
@@ -585,7 +594,7 @@ Token *tokenize(File *file) {
     // Character literal
     if (*p == '\'') {
       cur = cur->next = read_char_literal(p, p, ty_int);
-      cur->val = (char)cur->val;
+      cur->val = (char) cur->val;
       p += cur->len;
       continue;
     }

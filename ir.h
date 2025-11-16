@@ -41,15 +41,13 @@ typedef enum {
   // call
   IR_CALL,
   IR_RET,
-  // variables/memory/constant
-  IR_ULOAD,
-  IR_SLOAD,
+  // memory
+  IR_LOAD,
   IR_STORE,
   IR_MEMCPY,
   // terminators
   IR_JP,
   IR_BR,
-  IR_SWITCH,
 
   IR_MAX
 } IROpc;
@@ -57,14 +55,28 @@ typedef enum {
 #define IROPC_HASRES(opc) ((opc) < IR_STORE && (opc) != IR_RET)
 #define IROPC_ISTERM(opc) ((opc) >= IR_JP)
 
+enum {
+  LOC_UNALLOC,
+  LOC_REG,
+  LOC_STACK,
+};
+
+typedef struct {
+  int sclass;
+  union {
+    int reg;
+    int stackoff;
+  };
+} IRVarLoc;
+
 typedef struct IRLocal IRLocal;
 struct IRLocal {
   IRLocal *next;
   int id;
   int numuses;
-  int offset;
   bool is_param;
   Obj *obj;
+  IRVarLoc curloc;
 };
 
 enum {
@@ -109,8 +121,8 @@ struct IRInstr {
     IRBlock **bops;
   };
   // for codegen
-  int curloc;
   int curuses;
+  IRVarLoc curloc;
 };
 
 struct IRBlock {

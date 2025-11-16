@@ -334,6 +334,7 @@ struct Type {
   int size;         // sizeof() value
   int align;        // alignment
   bool is_unsigned; // unsigned or signed
+  bool is_volatile;
   bool is_atomic;   // true if _Atomic
   Type *origin;     // for type compatibility check
 

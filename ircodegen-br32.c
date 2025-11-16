@@ -5,6 +5,7 @@ const char *R[] = {"zr", "sp", "a0", "a1",  "a2",  "a3",  "a4", "t0",
                    "t9", "s0", "s1", "s2",  "s3",  "s4",  "s5", "s6",
                    "s7", "s8", "s9", "s10", "s11", "s12", "fp", "lr"};
 
+#define ZREG 0
 #define SPREG 1
 #define ARGSSTART 2
 #define RETREG ARGSSTART
@@ -12,38 +13,145 @@ const char *R[] = {"zr", "sp", "a0", "a1",  "a2",  "a3",  "a4", "t0",
 #define TEMPSTART 7
 #define NTEMP 10
 #define SAVEDSTART 17
-#define NSAVED 13
+#define NSAVED 14
 #define FPREG 30
+#define LRREG 31
+
+#define WORDSIZE 4
 
 #define SIZE_SUFFIX(sz) (sz == 1 ? "b" : sz == 2 ? "h" : "w")
 
 static FILE *output_file;
 
-// later make this a growable vector where
-// slots > 32 represent spill on stack
-// <32 are registers
-static IRInstr *usedloc[32] = {};
+static IRFunction *cur_fun;
+static IRVarLoc *usedreg[32];
+static int maxsaved;
+static int curstack;
+#define LOCKED_REG ((IRVarLoc *) -1)
+
+#define P(fmt, ...) fprintf(output_file, fmt "\n" __VA_OPT__(, ) __VA_ARGS__)
+#define I(fmt, ...)                                                            \
+  fprintf(output_file, "  " fmt "\n" __VA_OPT__(, ) __VA_ARGS__)
+
+static int alloc_stack(int size, int align) {
+  curstack += size;
+  curstack = align_to(curstack, align);
+  if (curstack > cur_fun->stacksize)
+    cur_fun->stacksize = curstack;
+  return curstack;
+}
+
+static void gen_mov(int dstreg, IRVarLoc *src) {
+  if (dstreg == ZREG)
+    return;
+  if (src->sclass == LOC_REG) {
+    if (dstreg != src->reg)
+      I("mov %s, %s", R[dstreg], R[src->reg]);
+  } else if (src->sclass == LOC_STACK) {
+    I("ldw %s, %d(fp)", R[dstreg], src->stackoff);
+  }
+}
+
+static void gen_movr(int dstreg, int srcreg) {
+  if (dstreg != srcreg) {
+    I("mov %s, %s", R[dstreg], R[srcreg]);
+  }
+}
+
+static int alloc_saved() {
+  for (int i = SAVEDSTART; i < SAVEDSTART + NSAVED; i++) {
+    if (usedreg[i])
+      continue;
+    if (i > maxsaved)
+      maxsaved = i;
+    return i;
+  }
+  return -1;
+}
+
+static void gen_spill(int reg) {
+  if (!usedreg[reg])
+    return;
+  assert(usedreg[reg] != LOCKED_REG);
+  int s = alloc_saved();
+  if (s >= 0) {
+    I("mov %s, %s", R[s], R[reg]);
+    usedreg[s] = usedreg[reg];
+    usedreg[s]->reg = s;
+  } else {
+    int soff = alloc_stack(WORDSIZE, WORDSIZE);
+    I("stw %s, %d(fp)", reg, soff);
+    usedreg[reg]->sclass = LOC_STACK;
+    usedreg[reg]->stackoff = soff;
+  }
+  usedreg[reg] = NULL;
+}
+
+static void clobber_temp() {
+  for (int i = ARGSSTART; i < ARGSSTART + NARGS; i++) {
+    gen_spill(i);
+  }
+  for (int i = TEMPSTART; i < TEMPSTART + NTEMP; i++) {
+    gen_spill(i);
+  }
+}
 
 static int alloc_temp() {
   for (int i = TEMPSTART; i < TEMPSTART + NTEMP; i++) {
-    if (usedloc[i])
+    if (usedreg[i])
       continue;
     return i;
   }
-  fprintf(stderr, "spill\n"); // TODO
-  return 1;
+  if (!usedreg[LRREG])
+    return LRREG;
+  int s = alloc_saved();
+  if (s >= 0)
+    return s;
+  // TODO: figure out a better way to pick this
+  gen_spill(TEMPSTART);
+  return TEMPSTART;
+}
+
+static void gen_reload(IRVarLoc *loc) {
+  assert(loc->sclass == LOC_STACK);
+  int r = alloc_temp();
+  I("ldw %s, %d(fp)", R[r], loc->stackoff);
+  loc->sclass = LOC_REG;
+  loc->reg = r;
+  usedreg[r] = loc;
 }
 
 static void alloc_i(IRInstr *i) {
-  if (i->curloc != 0 || i->hdr.numuses == 0)
+  if (i->hdr.numuses == 0) {
+    i->curloc.sclass = LOC_REG;
+    i->curloc.reg = ZREG;
     return;
-  i->curloc = alloc_temp();
-  usedloc[i->curloc] = i;
+  }
+  if (i->curloc.sclass == LOC_UNALLOC) {
+    i->curloc.reg = alloc_temp();
+    i->curloc.sclass = LOC_REG;
+  }
+  assert(i->curloc.sclass == LOC_REG);
+  if (usedreg[i->curloc.reg] != LOCKED_REG)
+    usedreg[i->curloc.reg] = &i->curloc;
+}
+
+static void alloc_i_fixed(IRInstr *i, int reg) {
+  if (i->curloc.sclass == LOC_UNALLOC) {
+    i->curloc.sclass = LOC_REG;
+    i->curloc.reg = reg;
+  }
+  gen_movr(i->curloc.reg, reg);
+  alloc_i(i);
 }
 
 static void use_i(IRInstr *i) {
-  if (++i->curuses == i->hdr.numuses)
-    usedloc[i->curloc] = NULL;
+  if (++i->curuses == i->hdr.numuses) {
+    if (i->curloc.sclass == LOC_REG && usedreg[i->curloc.reg] == &i->curloc)
+      usedreg[i->curloc.reg] = NULL;
+    else if (i->curloc.sclass == LOC_STACK && i->curloc.stackoff == curstack)
+      curstack -= WORDSIZE;
+  }
 }
 
 static bool is_valid_limm16(uint32_t imm) {
@@ -56,17 +164,16 @@ static bool is_valid_aimm16(uint32_t imm) {
          (-imm & 0xffff) == 0 || (-imm & 0xffff0000) == 0;
 }
 
-#define P(fmt, ...) fprintf(output_file, fmt "\n" __VA_OPT__(, ) __VA_ARGS__)
-#define I(fmt, ...)                                                            \
-  fprintf(output_file, "  " fmt "\n" __VA_OPT__(, ) __VA_ARGS__)
-
-static void gen_mov(int dstloc, int srcloc) {
-  if (dstloc == 0 || dstloc == srcloc)
-    return;
-  I("mov %s, %s", R[dstloc], R[srcloc]);
-}
-
 static void gen_i(IRInstr *i);
+
+static void gen_i_fixed(IRInstr *i, int reg) {
+  if (i->curloc.sclass == LOC_UNALLOC) {
+    i->curloc.sclass = LOC_REG;
+    i->curloc.reg = reg;
+  }
+  gen_i(i);
+  gen_movr(reg, i->curloc.reg);
+}
 
 enum { COND_GT, COND_LE, COND_EQ, COND_NE, COND_LT, COND_GE };
 
@@ -78,18 +185,18 @@ static int gen_cmp(IRInstr *i) {
     imm = true;
     swap = true;
     gen_i(i->iops[1]);
-    op1 = i->iops[1]->curloc;
+    op1 = i->iops[1]->curloc.reg;
     op2 = i->iops[0]->cval;
   } else if (i->iops[1]->opc == IR_CONST && is_valid_aimm16(i->iops[1]->cval)) {
     imm = true;
     gen_i(i->iops[0]);
-    op1 = i->iops[0]->curloc;
+    op1 = i->iops[0]->curloc.reg;
     op2 = i->iops[1]->cval;
   } else {
     gen_i(i->iops[0]);
     gen_i(i->iops[1]);
-    op1 = i->iops[0]->curloc;
-    op2 = i->iops[1]->curloc;
+    op1 = i->iops[0]->curloc.reg;
+    op2 = i->iops[1]->curloc.reg;
   }
   use_i(i->iops[0]);
   use_i(i->iops[1]);
@@ -129,14 +236,9 @@ typedef struct {
   int mode;
   int base;
   int offset;
-  int scale;
 } AddrMode;
 
-static bool valid_scale(int i) {
-  return i == 1 || i == 2 || i == 4;
-}
-
-static void gen_addr(IRInstr *i, AddrMode *res) {
+static void gen_addr(IRInstr *i, AddrMode *res, int size) {
   switch (i->opc) {
   case IR_ADD:
     if (i->iops[0]->opc == IR_LOCALPTR && i->iops[1]->opc == IR_CONST) {
@@ -145,18 +247,18 @@ static void gen_addr(IRInstr *i, AddrMode *res) {
       use_i(i);
       res->mode = ADDR_REG_IMM;
       res->base = FPREG;
-      res->offset = -i->iops[0]->lvar->offset + i->iops[1]->cval;
+      res->offset = -i->iops[0]->lvar->curloc.stackoff + i->iops[1]->cval;
     } else if (i->iops[1]->opc == IR_CONST) {
       gen_i(i->iops[0]);
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       use_i(i);
       res->mode = ADDR_REG_IMM;
-      res->base = i->iops[0]->curloc;
+      res->base = i->iops[0]->curloc.reg;
       res->offset = i->iops[1]->cval;
     } else if (i->iops[1]->opc == IR_MUL &&
                i->iops[1]->iops[1]->opc == IR_CONST &&
-               valid_scale(i->iops[1]->iops[1]->cval)) {
+               i->iops[1]->iops[1]->cval == size) {
       // TODO: change the check to shl after multiply is converted to shl
       gen_i(i->iops[0]);
       gen_i(i->iops[1]->iops[0]);
@@ -166,9 +268,8 @@ static void gen_addr(IRInstr *i, AddrMode *res) {
       use_i(i->iops[1]);
       use_i(i);
       res->mode = ADDR_REG_IDX;
-      res->base = i->iops[0]->curloc;
-      res->offset = i->iops[1]->iops[0]->curloc;
-      res->scale = i->iops[1]->iops[1]->cval;
+      res->base = i->iops[0]->curloc.reg;
+      res->offset = i->iops[1]->iops[0]->curloc.reg;
     } else {
       gen_i(i->iops[0]);
       gen_i(i->iops[1]);
@@ -176,40 +277,70 @@ static void gen_addr(IRInstr *i, AddrMode *res) {
       use_i(i->iops[1]);
       use_i(i);
       res->mode = ADDR_REG_REG;
-      res->base = i->iops[0]->curloc;
-      res->offset = i->iops[1]->curloc;
+      res->base = i->iops[0]->curloc.reg;
+      res->offset = i->iops[1]->curloc.reg;
     }
     break;
   case IR_LOCALPTR:
     use_i(i);
     res->mode = ADDR_REG_IMM;
     res->base = FPREG;
-    res->offset = -i->lvar->offset;
+    res->offset = -i->lvar->curloc.stackoff;
     break;
   default:
     gen_i(i);
     use_i(i);
     res->mode = ADDR_REG;
-    res->base = i->curloc;
+    res->base = i->curloc.reg;
+  }
+}
+
+static void gen_load(int dstreg, AddrMode *amod, bool is_signed, int size) {
+  switch (amod->mode) {
+  case ADDR_REG:
+    I("ld%s%s %s, (%s)", SIZE_SUFFIX(size), is_signed ? "s" : "", R[dstreg],
+      R[amod->base]);
+    break;
+  case ADDR_REG_IMM:
+    I("ld%s%s %s, %d(%s)", SIZE_SUFFIX(size), is_signed ? "s" : "", R[dstreg],
+      amod->offset, R[amod->base]);
+    break;
+  case ADDR_REG_REG:
+    I("ld%s%sx %s, (%s, %s)", SIZE_SUFFIX(size), is_signed ? "s" : "",
+      R[dstreg], R[amod->base], R[amod->offset]);
+    break;
+  case ADDR_REG_IDX:
+    I("ld%s%sx %s, (%s, %s, %d)", SIZE_SUFFIX(size), is_signed ? "s" : "",
+      R[dstreg], R[amod->base], R[amod->offset], size);
+    break;
   }
 }
 
 static void gen_i(IRInstr *i) {
-  if (i->hdr.visited) // TODO: handle reloading after spill
+  if (i->curloc.sclass == LOC_STACK)
+    gen_reload(&i->curloc);
+  if (i->hdr.visited) {
+    assert(i->curloc.sclass == LOC_REG);
     return;
+  }
   i->hdr.visited = true;
   switch (i->opc) {
   case IR_CONST:
-    alloc_i(i);
-    I("movi %s, %#x", R[i->curloc], (uint32_t) i->cval);
+    if (i->cval == 0) {
+      alloc_i_fixed(i, ZREG);
+    } else {
+      alloc_i(i);
+      I("movi %s, %#x", R[i->curloc.reg], (uint32_t) i->cval);
+    }
     break;
   case IR_GLOBALPTR:
     alloc_i(i);
-    I("adr %s, %s", R[i->curloc], i->gvar->name);
+    I("adr %s, %s", R[i->curloc.reg], i->gvar->name);
     break;
   case IR_LOCALPTR:
+    assert(i->lvar->curloc.sclass == LOC_STACK);
     alloc_i(i);
-    I("addi %s, fp, %d", R[i->curloc], -i->lvar->offset);
+    I("addi %s, fp, %d", R[i->curloc.reg], -i->lvar->curloc.stackoff);
     break;
   case IR_ADD:
     if (i->iops[0]->opc == IR_CONST && is_valid_aimm16(i->iops[0]->cval)) {
@@ -217,7 +348,7 @@ static void gen_i(IRInstr *i) {
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("addi %s, %s, %d", R[i->curloc], R[i->iops[1]->curloc],
+      I("addi %s, %s, %d", R[i->curloc.reg], R[i->iops[1]->curloc.reg],
         (uint32_t) i->iops[0]->cval);
     } else if (i->iops[1]->opc == IR_CONST &&
                is_valid_aimm16(i->iops[1]->cval)) {
@@ -225,7 +356,7 @@ static void gen_i(IRInstr *i) {
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("addi %s, %s, %d", R[i->curloc], R[i->iops[0]->curloc],
+      I("addi %s, %s, %d", R[i->curloc.reg], R[i->iops[0]->curloc.reg],
         (uint32_t) i->iops[1]->cval);
     } else {
       gen_i(i->iops[0]);
@@ -233,8 +364,8 @@ static void gen_i(IRInstr *i) {
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("add %s, %s, %s", R[i->curloc], R[i->iops[0]->curloc],
-        R[i->iops[1]->curloc]);
+      I("add %s, %s, %s", R[i->curloc.reg], R[i->iops[0]->curloc.reg],
+        R[i->iops[1]->curloc.reg]);
     }
     break;
   case IR_SUB:
@@ -243,8 +374,8 @@ static void gen_i(IRInstr *i) {
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("neg %s, %s", R[i->curloc], R[i->iops[1]->curloc]);
-      I("addi %s, %s, %d", R[i->curloc], R[i->curloc],
+      I("neg %s, %s", R[i->curloc.reg], R[i->iops[1]->curloc.reg]);
+      I("addi %s, %s, %d", R[i->curloc.reg], R[i->curloc.reg],
         (uint32_t) i->iops[0]->cval);
     } else if (i->iops[1]->opc == IR_CONST &&
                is_valid_aimm16(i->iops[1]->cval)) {
@@ -252,7 +383,7 @@ static void gen_i(IRInstr *i) {
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("subi %s, %s, %d", R[i->curloc], R[i->iops[0]->curloc],
+      I("subi %s, %s, %d", R[i->curloc.reg], R[i->iops[0]->curloc.reg],
         (uint32_t) i->iops[1]->cval);
     } else {
       gen_i(i->iops[0]);
@@ -260,8 +391,8 @@ static void gen_i(IRInstr *i) {
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("sub %s, %s, %s", R[i->curloc], R[i->iops[0]->curloc],
-        R[i->iops[1]->curloc]);
+      I("sub %s, %s, %s", R[i->curloc.reg], R[i->iops[0]->curloc.reg],
+        R[i->iops[1]->curloc.reg]);
     }
     break;
   case IR_AND:
@@ -275,7 +406,7 @@ static void gen_i(IRInstr *i) {
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("%si %s, %s, %#x", opcode, R[i->curloc], R[i->iops[1]->curloc],
+      I("%si %s, %s, %#x", opcode, R[i->curloc.reg], R[i->iops[1]->curloc.reg],
         (uint32_t) i->iops[0]->cval);
     } else if (i->iops[1]->opc == IR_CONST &&
                is_valid_limm16(i->iops[1]->cval)) {
@@ -283,7 +414,7 @@ static void gen_i(IRInstr *i) {
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("%si %s, %s, %#x", opcode, R[i->curloc], R[i->iops[0]->curloc],
+      I("%si %s, %s, %#x", opcode, R[i->curloc.reg], R[i->iops[0]->curloc.reg],
         (uint32_t) i->iops[1]->cval);
     } else {
       gen_i(i->iops[0]);
@@ -291,8 +422,8 @@ static void gen_i(IRInstr *i) {
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("%s %s, %s, %s", opcode, R[i->curloc], R[i->iops[0]->curloc],
-        R[i->iops[1]->curloc]);
+      I("%s %s, %s, %s", opcode, R[i->curloc.reg], R[i->iops[0]->curloc.reg],
+        R[i->iops[1]->curloc.reg]);
     }
     break;
   }
@@ -307,7 +438,7 @@ static void gen_i(IRInstr *i) {
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("%si %s, %s, %d", opcode, R[i->curloc], R[i->iops[0]->curloc],
+      I("%si %s, %s, %d", opcode, R[i->curloc.reg], R[i->iops[0]->curloc.reg],
         (uint32_t) i->iops[1]->cval % 32);
     } else {
       gen_i(i->iops[0]);
@@ -315,8 +446,8 @@ static void gen_i(IRInstr *i) {
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("%s %s, %s, %s", opcode, R[i->curloc], R[i->iops[0]->curloc],
-        R[i->iops[1]->curloc]);
+      I("%s %s, %s, %s", opcode, R[i->curloc.reg], R[i->iops[0]->curloc.reg],
+        R[i->iops[1]->curloc.reg]);
     }
     break;
   }
@@ -324,24 +455,36 @@ static void gen_i(IRInstr *i) {
     gen_i(i->iops[0]);
     use_i(i->iops[0]);
     alloc_i(i);
-    I("neg %s, %s", R[i->curloc], R[i->iops[0]->curloc]);
+    I("neg %s, %s", R[i->curloc.reg], R[i->iops[0]->curloc.reg]);
     break;
   case IR_NOT:
     gen_i(i->iops[0]);
     use_i(i->iops[0]);
     alloc_i(i);
-    I("not %s, %s", R[i->curloc], R[i->iops[0]->curloc]);
+    I("not %s, %s", R[i->curloc.reg], R[i->iops[0]->curloc.reg]);
     break;
   case IR_UEXT:
   case IR_SEXT: {
-    gen_i(i->iops[0]);
-    use_i(i->iops[0]);
-    alloc_i(i);
-    if (i->size >= 4)
-      gen_mov(i->curloc, i->iops[0]->curloc);
-    else
-      I("%sx%s %s, %s", i->opc == IR_UEXT ? "u" : "s", SIZE_SUFFIX(i->size),
-        R[i->curloc], R[i->iops[0]->curloc]);
+    if (i->iops[0]->opc == IR_LOAD &&
+        !(i->iops[0]->iops[0]->opc == IR_LOCALPTR &&
+          i->iops[0]->iops[0]->lvar->curloc.sclass == LOC_REG) &&
+        i->iops[0]->size == i->size) {
+      AddrMode amod;
+      use_i(i->iops[0]);
+      gen_addr(i->iops[0]->iops[0], &amod, i->size);
+      alloc_i(i);
+      gen_load(i->curloc.reg, &amod, i->opc == IR_SEXT, i->size);
+    } else {
+      gen_i(i->iops[0]);
+      use_i(i->iops[0]);
+      alloc_i(i);
+      if (i->size >= WORDSIZE) {
+        gen_mov(i->curloc.reg, &i->iops[0]->curloc);
+      } else {
+        I("%sx%s %s, %s", i->opc == IR_UEXT ? "u" : "s", SIZE_SUFFIX(i->size),
+          R[i->curloc.reg], R[i->iops[0]->curloc.reg]);
+      }
+    }
     break;
   }
   case IR_EQ:
@@ -354,55 +497,46 @@ static void gen_i(IRInstr *i) {
                              "setne", "setlt", "setge"};
     int cond = gen_cmp(i);
     alloc_i(i);
-    I("%s %s", opcodes[cond], R[i->curloc]);
+    I("%s %s", opcodes[cond], R[i->curloc.reg]);
     break;
   }
   case IR_CALL: {
+    cur_fun->is_leaf = false;
     // TODO: stack args
     for (int a = 1; a < i->numops; a++) {
-      i->iops[a]->curloc = ARGSSTART + a - 1;
-      gen_i(i->iops[a]);
+      if (i->iops[a]->curloc.sclass == LOC_UNALLOC) {
+        gen_spill(ARGSSTART + a - 1);
+        i->iops[a]->curloc.sclass = LOC_REG;
+        i->iops[a]->curloc.reg = ARGSSTART + a - 1;
+        gen_i(i->iops[a]);
+      }
+    }
+    for (int a = 1; a < i->numops; a++) {
+      gen_mov(ARGSSTART + a - 1, &i->iops[a]->curloc);
       use_i(i->iops[a]);
     }
-    // TODO: save temp regs
+    clobber_temp();
     if (i->iops[0]->opc == IR_GLOBALPTR) {
       use_i(i->iops[0]);
       I("jl %s", i->iops[0]->gvar->name);
     } else {
       gen_i(i->iops[0]);
       use_i(i->iops[0]);
-      I("jlr %s", R[i->iops[0]->curloc]);
+      I("jlr %s", R[i->iops[0]->curloc.reg]);
     }
-    alloc_i(i);
-    gen_mov(i->curloc, ARGSSTART);
+    alloc_i_fixed(i, RETREG);
     break;
   }
-  case IR_ULOAD:
-  case IR_SLOAD: {
-    AddrMode amod;
-    gen_addr(i->iops[0], &amod);
-    alloc_i(i);
-    switch (amod.mode) {
-    case ADDR_REG:
-      I("ld%s%s %s, (%s)", SIZE_SUFFIX(i->size),
-        i->opc == IR_SLOAD && i->size != 4 ? "s" : "", R[i->curloc],
-        R[amod.base]);
-      break;
-    case ADDR_REG_IMM:
-      I("ld%s%s %s, %d(%s)", SIZE_SUFFIX(i->size),
-        i->opc == IR_SLOAD && i->size != 4 ? "s" : "", R[i->curloc],
-        amod.offset, R[amod.base]);
-      break;
-    case ADDR_REG_REG:
-      I("ld%s%sx %s, (%s, %s)", SIZE_SUFFIX(i->size),
-        i->opc == IR_SLOAD && i->size != 4 ? "s" : "", R[i->curloc],
-        R[amod.base], R[amod.offset]);
-      break;
-    case ADDR_REG_IDX:
-      I("ld%s%sx %s, (%s, %s, %d)", SIZE_SUFFIX(i->size),
-        i->opc == IR_SLOAD && i->size != 4 ? "s" : "", R[i->curloc],
-        R[amod.base], R[amod.offset], amod.scale);
-      break;
+  case IR_LOAD: {
+    if (i->iops[0]->opc == IR_LOCALPTR &&
+        i->iops[0]->lvar->curloc.sclass == LOC_REG) {
+      int r = i->iops[0]->lvar->curloc.reg;
+      alloc_i_fixed(i, i->iops[0]->lvar->curloc.reg);
+    } else {
+      AddrMode amod;
+      gen_addr(i->iops[0], &amod, i->size);
+      alloc_i(i);
+      gen_load(i->curloc.reg, &amod, false, i->size);
     }
     break;
   }
@@ -415,27 +549,33 @@ static void gen_b(IRBlock *b) {
     IRB_ITER(i, b) {
       switch (i->opc) {
       case IR_STORE: {
-        AddrMode amod;
-        gen_i(i->iops[1]);
-        gen_addr(i->iops[0], &amod);
-        use_i(i->iops[1]);
-        switch (amod.mode) {
-        case ADDR_REG:
-          I("st%s %s, (%s)", SIZE_SUFFIX(i->size), R[i->iops[1]->curloc],
-            R[amod.base]);
-          break;
-        case ADDR_REG_IMM:
-          I("st%s %s, %d(%s)", SIZE_SUFFIX(i->size), R[i->iops[1]->curloc],
-            amod.offset, R[amod.base]);
-          break;
-        case ADDR_REG_REG:
-          I("st%sx %s, (%s, %s)", SIZE_SUFFIX(i->size), R[i->iops[1]->curloc],
-            R[amod.base], R[amod.offset]);
-          break;
-        case ADDR_REG_IDX:
-          I("st%sx %s, (%s, %s, %d)", SIZE_SUFFIX(i->size),
-            R[i->iops[1]->curloc], R[amod.base], R[amod.offset], amod.scale);
-          break;
+        if (i->iops[0]->opc == IR_LOCALPTR &&
+            i->iops[0]->lvar->curloc.sclass == LOC_REG) {
+          int r = i->iops[0]->lvar->curloc.reg;
+          gen_i_fixed(i->iops[1], i->iops[0]->lvar->curloc.reg);
+        } else {
+          AddrMode amod;
+          gen_i(i->iops[1]);
+          gen_addr(i->iops[0], &amod, i->size);
+          use_i(i->iops[1]);
+          switch (amod.mode) {
+          case ADDR_REG:
+            I("st%s %s, (%s)", SIZE_SUFFIX(i->size), R[i->iops[1]->curloc.reg],
+              R[amod.base]);
+            break;
+          case ADDR_REG_IMM:
+            I("st%s %s, %d(%s)", SIZE_SUFFIX(i->size),
+              R[i->iops[1]->curloc.reg], amod.offset, R[amod.base]);
+            break;
+          case ADDR_REG_REG:
+            I("st%sx %s, (%s, %s)", SIZE_SUFFIX(i->size),
+              R[i->iops[1]->curloc.reg], R[amod.base], R[amod.offset]);
+            break;
+          case ADDR_REG_IDX:
+            I("st%sx %s, (%s, %s, %d)", SIZE_SUFFIX(i->size),
+              R[i->iops[1]->curloc.reg], R[amod.base], R[amod.offset], i->size);
+            break;
+          }
         }
         break;
       }
@@ -454,8 +594,13 @@ static void gen_b(IRBlock *b) {
         break;
       }
       case IR_RET:
-        i->iops[0]->curloc = RETREG;
-        gen_i(i->iops[0]);
+        if (i->iops[0]->curloc.sclass == LOC_UNALLOC) {
+          i->iops[0]->curloc.sclass = LOC_REG;
+          i->iops[0]->curloc.reg = RETREG;
+          gen_i(i->iops[0]);
+        } else {
+          gen_mov(RETREG, &i->iops[0]->curloc);
+        }
         use_i(i->iops[0]);
         break;
       default: gen_i(i);
@@ -498,16 +643,31 @@ static char *escape_string_lit(const char *in) {
 void ircodegen(IRProgram *p, FILE *out) {
   output_file = out;
   for (IRFunction *f = p->funs; f; f = f->next) {
-    memset(usedloc, 0, sizeof usedloc);
+    memset(usedreg, 0, sizeof usedreg);
+    usedreg[ZREG] = usedreg[SPREG] = usedreg[FPREG] = usedreg[LRREG] =
+        LOCKED_REG;
+    cur_fun = f;
+    f->is_leaf = true;
+    maxsaved = SAVEDSTART - 1;
+    curstack = f->stacksize = 0;
+
     // TODO: handle stack args/ struct args
     for (IRLocal *l = f->locals; l; l = l->next) {
       if (!l->numuses)
         continue;
-      f->stacksize += l->obj->ty->size;
-      f->stacksize = align_to(f->stacksize, l->obj->align);
-      l->offset = f->stacksize;
+      if (l->obj->ty->size <= WORDSIZE && !l->obj->ty->is_volatile) {
+        int s = alloc_saved();
+        if (s >= 0) {
+          l->curloc.sclass = LOC_REG;
+          l->curloc.reg = s;
+          usedreg[s] = LOCKED_REG;
+          continue;
+        }
+      }
+      l->curloc.sclass = LOC_STACK;
+      l->curloc.stackoff = alloc_stack(l->obj->ty->size, l->obj->align);
     }
-    f->stacksize = align_to(f->stacksize, 4);
+    f->stacksize = align_to(f->stacksize, WORDSIZE);
 
     char *buf;
     size_t buflen;
@@ -519,27 +679,51 @@ void ircodegen(IRProgram *p, FILE *out) {
     fclose(output_file);
     output_file = out;
 
+    int save_lr = !f->is_leaf;
+    int save_fp = f->stacksize != 0;
+    int nsaved = save_lr + save_fp + maxsaved - SAVEDSTART + 1;
+    int spdisp = WORDSIZE * nsaved + f->stacksize;
+
     I("#align 32");
     P("%s:", f->obj->name);
-    I("stw lr, -4(sp)");
-    I("stw fp, -8(sp)");
-    I("subi fp, sp, 8");
-    I("subi sp, sp, %d", 8 + f->stacksize);
+    if (save_lr)
+      I("stw lr, %d(sp)", -WORDSIZE);
+    if (save_fp)
+      I("stw fp, %d(sp)", -(WORDSIZE * (save_lr + 1)));
+    for (int i = SAVEDSTART; i <= maxsaved; i++) {
+      I("stw %s, %d(sp)", R[i],
+        -(WORDSIZE * (save_lr + save_fp + i - SAVEDSTART + 1)));
+    }
+    if (save_fp)
+      I("subi fp, sp, %d", WORDSIZE * nsaved);
+    if (spdisp != 0)
+      I("subi sp, sp, %d", spdisp);
 
     int pi = 0;
     for (IRLocal *p = f->params; p; p = p->next, pi++) {
-      if (p->offset <= 0)
-        continue;
-      I("st%s %s, %d(fp)", SIZE_SUFFIX(p->obj->ty->size), R[ARGSSTART + pi],
-        -p->offset);
+      if (p->curloc.sclass == LOC_REG) {
+        gen_movr(p->curloc.reg, ARGSSTART + pi);
+      } else if (p->curloc.sclass == LOC_STACK) {
+        if (p->curloc.stackoff <= 0)
+          continue;
+        I("st%s %s, %d(fp)", SIZE_SUFFIX(p->obj->ty->size), R[ARGSSTART + pi],
+          -p->curloc.stackoff);
+      }
     }
 
     fwrite(buf, 1, buflen, output_file);
     free(buf);
 
-    I("addi sp, sp, %d", 8 + f->stacksize);
-    I("ldw fp, -8(sp)");
-    I("ldw lr, -4(sp)");
+    if (spdisp != 0)
+      I("addi sp, sp, %d", spdisp);
+    for (int i = maxsaved; i >= SAVEDSTART; i--) {
+      I("ldw %s, %d(sp)", R[i],
+        -(WORDSIZE * (save_lr + save_fp + i - SAVEDSTART + 1)));
+    }
+    if (save_fp)
+      I("ldw fp, %d(sp)", -(WORDSIZE * (save_lr + 1)));
+    if (save_lr)
+      I("ldw lr, %d(sp)", -WORDSIZE);
     I("ret");
     P();
   }
@@ -561,10 +745,10 @@ void ircodegen(IRProgram *p, FILE *out) {
           if (rel && rel->offset == pos) {
             I("dw %s%+ld", *rel->label, rel->addend);
             rel = rel->next;
-            pos += 4;
-          } else if (g->ty->size - pos >= 4) {
+            pos += WORDSIZE;
+          } else if (g->ty->size - pos >= WORDSIZE) {
             I("dw %#x", *(uint32_t *) &g->init_data[pos]);
-            pos += 4;
+            pos += WORDSIZE;
           } else {
             I("db %#x", g->init_data[pos++]);
           }
