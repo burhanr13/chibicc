@@ -7,6 +7,7 @@ const char *R[] = {"zr", "sp", "a0", "a1",  "a2",  "a3",  "a4", "t0",
 
 #define SPREG 1
 #define ARGSSTART 2
+#define RETREG ARGSSTART
 #define NARGS 5
 #define TEMPSTART 7
 #define NTEMP 10
@@ -411,7 +412,7 @@ static void gen_i(IRInstr *i) {
 static void gen_b(IRBlock *b) {
   for (; b; b = b->rpo_next) {
     P(".B%d:", b->hdr.id);
-    for (IRInstr *i = b->first; i; i = i->next) {
+    IRB_ITER(i, b) {
       switch (i->opc) {
       case IR_STORE: {
         AddrMode amod;
@@ -453,15 +454,9 @@ static void gen_b(IRBlock *b) {
         break;
       }
       case IR_RET:
-        if (i->ops[0]) {
-          i->iops[0]->curloc = ARGSSTART;
-          gen_i(i->iops[0]);
-          use_i(i->iops[0]);
-        }
-        I("addi sp, fp, 8");
-        I("ldw fp, -8(sp)");
-        I("ldw lr, -4(sp)");
-        I("ret");
+        i->iops[0]->curloc = RETREG;
+        gen_i(i->iops[0]);
+        use_i(i->iops[0]);
         break;
       default: gen_i(i);
       }
@@ -514,12 +509,22 @@ void ircodegen(IRProgram *p, FILE *out) {
     }
     f->stacksize = align_to(f->stacksize, 4);
 
+    char *buf;
+    size_t buflen;
+    output_file = open_memstream(&buf, &buflen);
+
+    ir_begin_pass((IRValue *) f->entry);
+    gen_b(f->entry);
+
+    fclose(output_file);
+    output_file = out;
+
     I("#align 32");
     P("%s:", f->obj->name);
     I("stw lr, -4(sp)");
     I("stw fp, -8(sp)");
     I("subi fp, sp, 8");
-    I("subi sp, sp, 8+.__stack_size__");
+    I("subi sp, sp, %d", 8 + f->stacksize);
 
     int pi = 0;
     for (IRLocal *p = f->params; p; p = p->next, pi++) {
@@ -529,12 +534,13 @@ void ircodegen(IRProgram *p, FILE *out) {
         -p->offset);
     }
 
-    ir_begin_pass((IRValue *) f->entry);
-    ir_setup_rpo(f->entry);
-    gen_b(f->entry);
+    fwrite(buf, 1, buflen, output_file);
+    free(buf);
 
-    // stack size will need to be increased later if theres spill
-    P(".__stack_size__ = %d", f->stacksize);
+    I("addi sp, sp, %d", 8 + f->stacksize);
+    I("ldw fp, -8(sp)");
+    I("ldw lr, -4(sp)");
+    I("ret");
     P();
   }
   for (Obj *g = p->obj; g; g = g->next) {

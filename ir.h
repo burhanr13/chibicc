@@ -40,6 +40,7 @@ typedef enum {
   IR_ULE,
   // call
   IR_CALL,
+  IR_RET,
   // variables/memory/constant
   IR_ULOAD,
   IR_SLOAD,
@@ -49,10 +50,12 @@ typedef enum {
   IR_JP,
   IR_BR,
   IR_SWITCH,
-  IR_RET,
 
   IR_MAX
 } IROpc;
+
+#define IROPC_HASRES(opc) ((opc) < IR_STORE && (opc) != IR_RET)
+#define IROPC_ISTERM(opc) ((opc) >= IR_JP)
 
 typedef struct IRLocal IRLocal;
 struct IRLocal {
@@ -72,10 +75,6 @@ enum {
 typedef struct IRValue IRValue;
 
 typedef struct IRUser IRUser;
-struct IRUser {
-  IRUser *next;
-  IRValue *user;
-};
 
 struct IRValue {
   int vt;
@@ -87,6 +86,12 @@ struct IRValue {
 
 typedef struct IRInstr IRInstr;
 typedef struct IRBlock IRBlock;
+
+struct IRUser {
+  IRUser *next;
+  IRInstr *user;
+  int idx;
+};
 
 struct IRInstr {
   IRValue hdr;
@@ -110,8 +115,9 @@ struct IRInstr {
 
 struct IRBlock {
   IRValue hdr;
-  IRInstr *first;
-  IRInstr *last;
+  IRInstr root;
+  bool is_entry;
+  bool is_exit;
 
   IRBlock *rpo_next;
 };
@@ -122,8 +128,11 @@ struct IRFunction {
   IRLocal *locals;
   IRLocal *params;
   IRBlock *entry;
+  IRBlock *exit;
   Obj *obj;
   int vctr;
+  bool is_leaf;
+
   int stacksize;
 };
 
@@ -133,13 +142,28 @@ typedef struct {
 } IRProgram;
 
 void ir_add_instr(IRBlock *b, IRInstr *i);
-void ir_remove_instr(IRBlock *b, IRInstr *i);
-void ir_add_user(IRValue *v, IRValue *u);
-void ir_remove_user(IRValue *v, IRValue *u);
-void ir_begin_pass(IRValue *v);
-void ir_setup_rpo(IRBlock *b);
+void ir_insert_instr(IRInstr *before, IRInstr *i);
+void ir_remove_instr(IRInstr *i);
+void ir_erase_instr(IRInstr *i);
+void ir_set_op(IRInstr *i, int op, IRValue *v);
+void ir_remove_user(IRValue *v, IRInstr *u);
 
 IRProgram *irgen(Obj *p);
 void irprint(IRProgram *p, FILE *out);
 void ircodegen(IRProgram *p, FILE *out);
 
+void ir_begin_pass(IRValue *v);
+
+void irpass_fix_cfg(IRFunction *f);
+void irpass_setup_rpo(IRFunction *f);
+
+#define IRB_ITER(i, b)                                                         \
+  for (IRInstr *i = (b)->root.next, *_next = i->next; i != &(b)->root;         \
+       i = _next, _next = _next->next)
+#define IRB_FIRST(b) ((b)->root.next)
+#define IRB_LAST(b) ((b)->root.prev)
+#define IRB_ISEMPTY(b) ((b)->root.next == &(b)->root)
+
+#define IR_RUNPASS(pass, p)                                                    \
+  for (IRFunction *f = (p)->funs; f; f = f->next)                              \
+    pass(f);

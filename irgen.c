@@ -7,6 +7,7 @@ static IRBlock *new_block() {
   IRBlock *b = calloc(1, sizeof *b);
   b->hdr.vt = IRV_BLOCK;
   b->hdr.id = cur_fun->vctr++;
+  b->root.next = b->root.prev = &b->root;
   return b;
 }
 
@@ -21,11 +22,6 @@ static IRInstr *new_instr(int numops) {
   i->numops = numops;
   i->ops = calloc(numops, sizeof(IRValue *));
   return i;
-}
-
-static void ir_set_op(IRInstr *i, int op, IRValue *v) {
-  i->ops[op] = v;
-  ir_add_user(v, (IRValue *) i);
 }
 
 static IRInstr *ir_const(uint64_t val) {
@@ -131,10 +127,9 @@ static IRInstr *ir_call(IRInstr *f, int nargs, IRInstr **args) {
 }
 
 static IRInstr *ir_ret(IRInstr *lhs) {
-  IRInstr *i = new_instr(lhs ? 1 : 0);
+  IRInstr *i = new_instr(1);
   i->opc = IR_RET;
-  if (lhs)
-    ir_set_op(i, 0, (IRValue *) lhs);
+  ir_set_op(i, 0, (IRValue *) lhs);
   return i;
 }
 
@@ -166,7 +161,9 @@ static IRInstr *gen_addr(Node *e) {
   case ND_FUNCALL:
   case ND_ASSIGN:
   case ND_COND:
-  case ND_VLA_PTR: return ir_const(0); // TODO
+  case ND_VLA_PTR:
+    printf("stubbed: addr of comma/funcall/assign/cond/vla_ptr\n");
+    return ir_const(0); // TODO
   }
 
   error_tok(e->tok, "not an lvalue");
@@ -174,7 +171,6 @@ static IRInstr *gen_addr(Node *e) {
 
 static IRInstr *gen_expr(Node *e) {
   switch (e->kind) {
-  case ND_NULL_EXPR: return ir_const(0);
   case ND_NUM: return ir_const(e->val);
   case ND_NEG: return ir_unary(IR_NEG, gen_expr(e->lhs));
   case ND_VAR: return ir_load(e->ty, gen_addr(e));
@@ -201,13 +197,16 @@ static IRInstr *gen_expr(Node *e) {
     add_instr(ir_store(e->ty, addr, stval));
     return val;
   }
-  case ND_STMT_EXPR: return ir_const(0); // TODO
-  case ND_COMMA: add_instr(gen_expr(e->lhs)); return gen_expr(e->rhs);
+  case ND_STMT_EXPR: printf("stubbed: stmt expr\n"); return ir_const(0); // TODO
+  case ND_COMMA:
+    if (e->lhs->kind != ND_NULL_EXPR)
+      add_instr(gen_expr(e->lhs));
+    return gen_expr(e->rhs);
   case ND_CAST: return ir_cast(gen_expr(e->lhs), e->lhs->ty, e->ty);
-  case ND_MEMZERO: return ir_const(0); // TODO
+  case ND_MEMZERO: printf("stubbed: memzero\n"); return ir_const(0); // TODO
   case ND_LOGAND:
   case ND_LOGOR:
-  case ND_COND: return ir_const(0); // TODO
+  case ND_COND: printf("stubbed: land/lor/cond\n"); return ir_const(0); // TODO
   case ND_NOT: return ir_binary(IR_EQ, gen_expr(e->lhs), ir_const(0));
   case ND_BITNOT: return ir_unary(IR_NOT, gen_expr(e->lhs));
   case ND_FUNCALL: {
@@ -332,14 +331,21 @@ static void gen_stmt(Node *s) {
   case ND_CASE:
   case ND_GOTO:
   case ND_GOTO_EXPR:
-  case ND_LABEL: return; // TODO
+  case ND_LABEL: printf("stubbed: switch/case/goto/label\n"); return; // TODO
   case ND_BLOCK:
     for (Node *n = s->body; n; n = n->next)
       gen_stmt(n);
     return;
-  case ND_RETURN: add_instr(ir_ret(s->lhs ? gen_expr(s->lhs) : NULL)); return;
-  case ND_EXPR_STMT: add_instr(gen_expr(s->lhs)); return;
-  case ND_ASM: return; // TODO
+  case ND_RETURN:
+    if (s->lhs)
+      add_instr(ir_ret(gen_expr(s->lhs)));
+    add_instr(ir_jump(cur_fun->exit));
+    return;
+  case ND_EXPR_STMT:
+    if (s->lhs->kind != ND_NULL_EXPR)
+      add_instr(gen_expr(s->lhs));
+    return;
+  case ND_ASM: printf("stubbed: asm\n"); return; // TODO
   }
 }
 
@@ -374,9 +380,14 @@ static IRFunction *gen_function(Obj *f) {
   }
 
   fun->entry = new_block();
+  fun->entry->is_entry = true;
+  fun->exit = new_block();
+  fun->exit->is_exit = true;
   cur_block = fun->entry;
   gen_stmt(f->body);
-  add_instr(ir_ret(!strcmp(f->name, "main") ? ir_const(0) : NULL));
+  if (!strcmp(f->name, "main"))
+    add_instr(ir_ret(ir_const(0)));
+  add_instr(ir_jump(fun->exit));
   return fun;
 }
 
