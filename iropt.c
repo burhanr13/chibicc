@@ -88,7 +88,7 @@ IPASS_BEGIN(constant_fold)
                         ir_const(RHS(LHS(i))->cval + RHS(i)->cval)));
         } else {
           OPT(ir_binary(i->opc, LHS(LHS(i)),
-                        ir_const(RHS(LHS(i))->cval - RHS(i)->cval)));
+                        ir_const(RHS(i)->cval - RHS(LHS(i))->cval)));
         }
       }
       if (RHS(i)->cval == 0) {

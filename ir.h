@@ -52,6 +52,8 @@ typedef enum {
   IR_MAX
 } IROpc;
 
+extern const char *ir_opc_names[IR_MAX];
+
 #define IROPC_HASRES(opc) ((opc) < IR_STORE && (opc) != IR_RET)
 #define IROPC_ISBINARY(opc)                                                    \
   ((IR_ADD <= (opc) && (opc) <= IR_SRA) || IROPC_ISCMP(opc))
@@ -169,7 +171,7 @@ void ir_insert_instr(IRInstr *before, IRInstr *i);
 void ir_remove_instr(IRInstr *i);
 void ir_erase_instr(IRInstr *i);
 void ir_set_op(IRInstr *i, int op, IRValue *v);
-void ir_remove_user(IRValue *v, IRInstr *u);
+void ir_remove_user(IRValue *v, IRInstr *u, int op);
 IRValue *ir_replace(IRValue *old, IRValue *new);
 
 IRInstr *ir_instr(int numops);

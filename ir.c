@@ -36,7 +36,7 @@ void ir_erase_instr(IRInstr *i) {
   assert(i->hdr.numuses == 0 && !i->hdr.uses);
   ir_remove_instr(i);
   for (int o = 0; o < i->numops; o++) {
-    ir_remove_user(i->ops[o], i);
+    ir_remove_user(i->ops[o], i, o);
   }
   if (i->opc == IR_LOCALPTR)
     i->lvar->numuses--;
@@ -44,9 +44,9 @@ void ir_erase_instr(IRInstr *i) {
 }
 
 void ir_set_op(IRInstr *i, int op, IRValue *v) {
-  if (i->ops[op]) {
-    ir_remove_user(i->ops[op], i);
-  }
+  assert(i != (IRInstr *) v);
+  assert(i->ops[op] != v);
+  IRValue *old = i->ops[op];
   i->ops[op] = v;
   v->numuses++;
   IRUser *n = malloc(sizeof *n);
@@ -54,12 +54,14 @@ void ir_set_op(IRInstr *i, int op, IRValue *v) {
   n->user = i;
   n->idx = op;
   v->uses = n;
+  if (old)
+    ir_remove_user(old, i, op);
 }
 
-void ir_remove_user(IRValue *v, IRInstr *user) {
+void ir_remove_user(IRValue *v, IRInstr *user, int op) {
   if (user) {
     IRUser **u = &v->uses;
-    while (*u && (*u)->user != user)
+    while (*u && ((*u)->user != user || (*u)->idx != op))
       u = &(*u)->next;
     if (*u) {
       v->numuses--;
@@ -70,13 +72,15 @@ void ir_remove_user(IRValue *v, IRInstr *user) {
   }
   if (!v->uses) {
     if (v->vt == IRV_INSTR) {
-      ir_erase_instr((IRInstr *) v);
+      IRInstr *i = (IRInstr *) v;
+      if (!i->parent)
+        ir_erase_instr((IRInstr *) v);
     } else if (v->vt == IRV_BLOCK) {
       IRBlock *b = (IRBlock *) v;
       assert(!b->is_entry);
       if (!b->is_exit) {
         while (!IRB_ISEMPTY(b))
-          ir_remove_user((IRValue *) IRB_FIRST(b), NULL);
+          ir_erase_instr(IRB_FIRST(b));
         free(b);
       }
     }
@@ -84,7 +88,9 @@ void ir_remove_user(IRValue *v, IRInstr *user) {
 }
 
 IRValue *ir_replace(IRValue *old, IRValue *new) {
+  assert(old != new);
   assert(old->vt == new->vt);
+
   if (!old->uses) {
     assert(old->vt == IRV_INSTR && new->vt == IRV_INSTR &&
            ((IRInstr *) old)->prev && ((IRInstr *) old)->next);

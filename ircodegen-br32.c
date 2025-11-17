@@ -346,7 +346,13 @@ static void gen_i(IRInstr *i) {
     I("adr %s, %s", R[i->curloc.reg], i->gvar->name);
     break;
   case IR_LOCALPTR:
-    assert(i->lvar->curloc.sclass == LOC_STACK);
+    if (i->lvar->curloc.sclass != LOC_STACK) {
+      int soff = alloc_stack(WORDSIZE, WORDSIZE);
+      I("stw %s, %d(fp)", R[i->lvar->curloc.reg], -soff);
+      usedreg[i->lvar->curloc.reg] = NULL;
+      i->lvar->curloc.sclass = LOC_STACK;
+      i->lvar->curloc.stackoff = soff;
+    }
     alloc_i(i);
     I("addi %s, fp, %d", R[i->curloc.reg], -i->lvar->curloc.stackoff);
     break;
@@ -507,7 +513,12 @@ static void gen_i(IRInstr *i) {
   case IR_LOAD:
     if (i->iops[0]->opc == IR_LOCALPTR &&
         i->iops[0]->lvar->curloc.sclass == LOC_REG) {
-      alloc_i_fixed(i, i->iops[0]->lvar->curloc.reg);
+      if (i->hdr.numuses > 1) {
+        alloc_i(i);
+        gen_movr(i->curloc.reg, i->iops[0]->lvar->curloc.reg);
+      } else {
+        alloc_i_fixed(i, i->iops[0]->lvar->curloc.reg);
+      }
     } else {
       AddrMode amod;
       gen_addr(i->iops[0], &amod, i->size);

@@ -11,7 +11,7 @@ TESTS=$(TEST_SRCS:.c=.exe)
 chibicc: $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-$(OBJS): chibicc.h
+$(OBJS): chibicc.h ir.h irpass.h
 
 test/%.exe: chibicc test/%.c
 	./chibicc -Iinclude -Itest -c -o test/$*.o test/$*.c
