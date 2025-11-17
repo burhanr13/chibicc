@@ -168,6 +168,7 @@ static IRInstr *gen_addr(Node *e) {
 
 static IRInstr *gen_expr(Node *e) {
   switch (e->kind) {
+  case ND_NULL_EXPR: return ir_const(0);
   case ND_NUM: return ir_const(e->val);
   case ND_NEG: return ir_unary(IR_NEG, gen_expr(e->lhs));
   case ND_VAR: return ir_load(e->ty, gen_addr(e));
@@ -195,10 +196,7 @@ static IRInstr *gen_expr(Node *e) {
     return val;
   }
   case ND_STMT_EXPR: printf("stubbed: stmt expr\n"); return ir_const(0); // TODO
-  case ND_COMMA:
-    if (e->lhs->kind != ND_NULL_EXPR)
-      add_instr(gen_expr(e->lhs));
-    return gen_expr(e->rhs);
+  case ND_COMMA: add_instr(gen_expr(e->lhs)); return gen_expr(e->rhs);
   case ND_CAST: return ir_cast(gen_expr(e->lhs), e->lhs->ty, e->ty);
   case ND_MEMZERO: printf("stubbed: memzero\n"); return ir_const(0); // TODO
   case ND_LOGAND:
@@ -338,10 +336,7 @@ static void gen_stmt(Node *s) {
       add_instr(ir_ret(gen_expr(s->lhs)));
     add_instr(ir_jump(cur_fun->exit));
     return;
-  case ND_EXPR_STMT:
-    if (s->lhs->kind != ND_NULL_EXPR)
-      add_instr(gen_expr(s->lhs));
-    return;
+  case ND_EXPR_STMT: add_instr(gen_expr(s->lhs)); return;
   case ND_ASM: printf("stubbed: asm\n"); return; // TODO
   }
 }

@@ -80,7 +80,7 @@ static void gen_spill(int reg) {
     usedreg[s]->reg = s;
   } else {
     int soff = alloc_stack(WORDSIZE, WORDSIZE);
-    I("stw %s, %d(fp)", reg, soff);
+    I("stw %s, %d(fp)", R[reg], -soff);
     usedreg[reg]->sclass = LOC_STACK;
     usedreg[reg]->stackoff = soff;
   }
@@ -124,7 +124,7 @@ static int alloc_temp() {
 static void gen_reload(IRVarLoc *loc) {
   assert(loc->sclass == LOC_STACK);
   int r = alloc_temp();
-  I("ldw %s, %d(fp)", R[r], loc->stackoff);
+  I("ldw %s, %d(fp)", R[r], -loc->stackoff);
   loc->sclass = LOC_REG;
   loc->reg = r;
   usedreg[r] = loc;
@@ -507,7 +507,6 @@ static void gen_i(IRInstr *i) {
   case IR_LOAD:
     if (i->iops[0]->opc == IR_LOCALPTR &&
         i->iops[0]->lvar->curloc.sclass == LOC_REG) {
-      int r = i->iops[0]->lvar->curloc.reg;
       alloc_i_fixed(i, i->iops[0]->lvar->curloc.reg);
     } else {
       AddrMode amod;
