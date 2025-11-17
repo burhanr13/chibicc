@@ -1,6 +1,57 @@
 #include "ir.h"
 #include "irpass.h"
 
+bool irinstr_has_side_effect(IRInstr *i) {
+  return IROPC_ISTERM(i->opc) || i->opc == IR_RET || i->opc == IR_STORE ||
+         i->opc == IR_MEMCPY || i->opc == IR_CALL || i->opc == IR_RET ||
+         (i->opc == IR_LOAD && i->is_volatile);
+}
+
+bool irinstr_isdead(IRInstr *i) {
+  if (irinstr_has_side_effect(i))
+    return false;
+  return i->hdr.numuses == 0;
+}
+
+BPASS_BEGIN(opt_cfg)
+  if (b->is_exit)
+    return;
+  bool found_term = false;
+  IRB_ITER(i, b) {
+    if (found_term || irinstr_isdead(i)) {
+      ir_erase_instr(i);
+    } else if (IROPC_ISTERM(i->opc))
+      found_term = true;
+  }
+  assert(found_term && !IRB_ISEMPTY(b));
+
+  if (IRB_LAST(b)->opc == IR_BR && IRB_LAST(b)->iops[0]->opc == IR_CONST) {
+    if (IRB_LAST(b)->iops[0]->cval) {
+      ir_replace((IRValue *) IRB_LAST(b),
+                 (IRValue *) ir_jump(IRB_LAST(b)->bops[1]));
+    } else {
+      ir_replace((IRValue *) IRB_LAST(b),
+                 (IRValue *) ir_jump(IRB_LAST(b)->bops[2]));
+    }
+  }
+
+  BPASS_REC_ALL(opt_cfg);
+
+  if (!b->is_entry && IRB_FIRST(b) == IRB_LAST(b) &&
+      IRB_LAST(b)->opc == IR_JP) {
+    bool post_loop = b->is_post_loop;
+    b = (IRBlock *) ir_replace((IRValue *) b, (IRValue *) IRB_LAST(b)->bops[0]);
+    if (post_loop)
+      b->is_post_loop = true;
+  }
+
+  if (IRB_LAST(b)->opc == IR_JP && IRB_LAST(b)->bops[0]->hdr.numuses == 1 &&
+      !IRB_LAST(b)->bops[0]->is_exit) {
+    ir_merge_block(b, IRB_LAST(b)->bops[0]);
+  }
+
+BPASS_END(opt_cfg)
+
 #define LHS(i) ((i)->iops[0])
 #define RHS(i) ((i)->iops[1])
 #define OPT(i2) (i = (IRInstr *) ir_replace((IRValue *) i, (IRValue *) (i2)))
@@ -17,6 +68,20 @@ IPASS_BEGIN(constant_fold)
     switch (i->opc) {
     case IR_NOT: OPT(ir_const(~LHS(i)->cval)); break;
     case IR_NEG: OPT(ir_const(-LHS(i)->cval)); break;
+    case IR_UEXT:
+      switch (i->size) {
+      case 1: OPT(ir_const((uint8_t) LHS(i)->cval)); break;
+      case 2: OPT(ir_const((uint16_t) LHS(i)->cval)); break;
+      case 4: OPT(ir_const((uint32_t) LHS(i)->cval)); break;
+      }
+      break;
+    case IR_SEXT:
+      switch (i->size) {
+      case 1: OPT(ir_const((int8_t) LHS(i)->cval)); break;
+      case 2: OPT(ir_const((int16_t) LHS(i)->cval)); break;
+      case 4: OPT(ir_const((int32_t) LHS(i)->cval)); break;
+      }
+      break;
     }
     return;
   }

@@ -3,6 +3,54 @@
 static IRFunction *cur_fun;
 static IRBlock *cur_block;
 
+static struct LabelNode {
+  IRBlock *b;
+  const char *label;
+  struct LabelNode *next;
+} *labels;
+
+static struct GotoNode {
+  IRInstr *i;
+  const char *label;
+  struct GotoNode *next;
+} *gotos;
+
+static void add_label(const char *label, IRBlock *b) {
+  struct LabelNode *n = malloc(sizeof *n);
+  n->b = b;
+  n->label = label;
+  n->next = labels;
+  labels = n;
+}
+
+static void add_goto(const char *label, IRInstr *i) {
+  assert(i->opc == IR_JP && i->bops[0] == NULL);
+  struct GotoNode *n = malloc(sizeof *n);
+  n->i = i;
+  n->label = label;
+  n->next = gotos;
+  gotos = n;
+}
+
+static void resolve_gotos() {
+  while (gotos) {
+    for (struct LabelNode *l = labels; l; l = l->next) {
+      if (!strcmp(gotos->label, l->label)) {
+        ir_set_op(gotos->i, 0, (IRValue *) l->b);
+        break;
+      }
+    }
+    struct GotoNode *tmp = gotos;
+    gotos = gotos->next;
+    free(tmp);
+  }
+  while (labels) {
+    struct LabelNode *tmp = labels;
+    labels = labels->next;
+    free(tmp);
+  }
+}
+
 static IRBlock *new_block() {
   return ir_block(cur_fun);
 }
@@ -293,40 +341,70 @@ static void gen_stmt(Node *s) {
   case ND_FOR: {
     if (s->init)
       gen_stmt(s->init);
+    IRBlock *cond = new_block();
     IRBlock *body = new_block();
+    IRBlock *cont = new_block();
     IRBlock *post = new_block();
-    IRBlock *cond = body;
+    post->is_post_loop = true;
+    add_instr(ir_jump(cond));
+
+    cur_block = cond;
     if (s->cond) {
-      cond = new_block();
-      add_instr(ir_jump(cond));
-      cur_block = cond;
       gen_condbr(s->cond, body, post);
     } else {
       add_instr(ir_jump(body));
     }
+
     cur_block = body;
     gen_stmt(s->then);
+    add_instr(ir_jump(cont));
+
+    cur_block = cont;
+    add_label(s->cont_label, cont);
     if (s->inc)
       add_instr(gen_expr(s->inc));
     add_instr(ir_jump(cond));
+
     cur_block = post;
+    add_label(s->brk_label, post);
     return;
   }
   case ND_DO: {
     IRBlock *body = new_block();
+    IRBlock *cond = new_block();
     IRBlock *post = new_block();
+    post->is_post_loop = true;
     add_instr(ir_jump(body));
+
     cur_block = body;
     gen_stmt(s->then);
+    add_instr(ir_jump(cond));
+
+    cur_block = cond;
+    add_label(s->cont_label, cond);
     gen_condbr(s->cond, body, post);
+
     cur_block = post;
+    add_label(s->brk_label, post);
     return;
   }
   case ND_SWITCH:
-  case ND_CASE:
-  case ND_GOTO:
-  case ND_GOTO_EXPR:
-  case ND_LABEL: printf("stubbed: switch/case/goto/label\n"); return; // TODO
+  case ND_CASE: printf("stubbed: switch/case\n"); return; // TODO
+  case ND_GOTO: {
+    IRInstr *gotoinst = ir_jump(NULL);
+    add_goto(s->unique_label, gotoinst);
+    add_instr(gotoinst);
+    break;
+  }
+  case ND_LABEL: {
+    IRBlock *nextblock = new_block();
+    add_instr(ir_jump(nextblock));
+    cur_block = nextblock;
+    add_label(s->unique_label, nextblock);
+    gen_stmt(s->lhs);
+    break;
+  }
+  case ND_GOTO_EXPR: printf("stubbed: goto expr\n"); return; // TODO
   case ND_BLOCK:
     for (Node *n = s->body; n; n = n->next)
       gen_stmt(n);
@@ -379,6 +457,9 @@ static IRFunction *gen_function(Obj *f) {
   if (!strcmp(f->name, "main"))
     add_instr(ir_ret(ir_const(0)));
   add_instr(ir_jump(fun->exit));
+
+  resolve_gotos();
+  
   return fun;
 }
 

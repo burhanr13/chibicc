@@ -144,6 +144,8 @@ struct IRBlock {
   bool is_entry;
   bool is_exit;
 
+  bool is_post_loop;
+
   IRBlock *rpo_next;
 };
 
@@ -173,6 +175,7 @@ void ir_erase_instr(IRInstr *i);
 void ir_set_op(IRInstr *i, int op, IRValue *v);
 void ir_remove_user(IRValue *v, IRInstr *u, int op);
 IRValue *ir_replace(IRValue *old, IRValue *new);
+void ir_merge_block(IRBlock *base, IRBlock *extra);
 
 IRInstr *ir_instr(int numops);
 IRInstr *ir_const(uint64_t val);
@@ -201,4 +204,5 @@ void ir_begin_pass(IRValue *v);
 #define IRB_LAST(b) ((b)->root.prev)
 #define IRB_ISEMPTY(b) ((b)->root.next == &(b)->root)
 
+void irpass_opt_cfg(IRFunction *f);
 void irpass_constant_fold(IRFunction *f);

@@ -17,6 +17,7 @@ void ir_add_instr(IRBlock *b, IRInstr *i) {
 }
 
 void ir_insert_instr(IRInstr *before, IRInstr *i) {
+  assert(!i->parent && !i->prev && !i->next);
   i->next = before;
   i->prev = before->prev;
   i->next->prev = i;
@@ -30,6 +31,7 @@ void ir_remove_instr(IRInstr *i) {
   i->prev->next = i->next;
   i->next->prev = i->prev;
   i->prev = i->next = NULL;
+  i->parent = NULL;
 }
 
 void ir_erase_instr(IRInstr *i) {
@@ -44,8 +46,9 @@ void ir_erase_instr(IRInstr *i) {
 }
 
 void ir_set_op(IRInstr *i, int op, IRValue *v) {
+  if (i->ops[op] == v)
+    return;
   assert(i != (IRInstr *) v);
-  assert(i->ops[op] != v);
   IRValue *old = i->ops[op];
   i->ops[op] = v;
   v->numuses++;
@@ -105,70 +108,53 @@ IRValue *ir_replace(IRValue *old, IRValue *new) {
   return new;
 }
 
+void ir_merge_block(IRBlock *base, IRBlock *extra) {
+  assert(IRB_LAST(base)->opc == IR_JP && IRB_LAST(base)->bops[0] == extra &&
+         extra->hdr.numuses == 1);
+  IRInstr *oldterm = IRB_LAST(base);
+  while (!IRB_ISEMPTY(extra)) {
+    IRInstr *i = IRB_FIRST(extra);
+    ir_remove_instr(i);
+    ir_add_instr(base, i);
+  }
+  ir_erase_instr(oldterm);
+}
+
 void ir_begin_pass(IRValue *v) {
-  if (!v->visited)
-    return;
-  v->visited = false;
   if (v->vt == IRV_INSTR) {
+    v->visited = false;
     IRInstr *i = (IRInstr *) v;
-    for (int o = 0; o < i->numops; o++)
+    for (int o = 0; o < i->numops; o++) {
       ir_begin_pass(i->ops[o]);
+    }
   } else if (v->vt == IRV_BLOCK) {
+    if (!v->visited)
+      return;
+    v->visited = false;
     IRBlock *b = (IRBlock *) v;
     IRB_ITER(i, b) {
-      i->hdr.visited = true;
       ir_begin_pass((IRValue *) i);
     }
   }
 }
 
-bool irinstr_has_side_effect(IRInstr *i) {
-  return IROPC_ISTERM(i->opc) || i->opc == IR_RET || i->opc == IR_STORE ||
-         i->opc == IR_MEMCPY || i->opc == IR_CALL || i->opc == IR_RET ||
-         (i->opc == IR_LOAD && i->is_volatile);
-}
-
-bool irinstr_isdead(IRInstr *i) {
-  if (irinstr_has_side_effect(i))
-    return false;
-  return i->hdr.numuses == 0;
-}
-
-BPASS_BEGIN(fix_cfg)
-  if (b->is_exit)
-    return;
-  bool found_term = false;
-  IRB_ITER(i, b) {
-    if (found_term || irinstr_isdead(i)) {
-      ir_erase_instr(i);
-    } else if (IROPC_ISTERM(i->opc))
-      found_term = true;
-  }
-  assert(found_term && !IRB_ISEMPTY(b));
-
-  if (IRB_LAST(b)->opc == IR_BR && IRB_LAST(b)->iops[0]->opc == IR_CONST) {
-    if (IRB_LAST(b)->iops[0]->cval) {
-      ir_replace((IRValue *) IRB_LAST(b),
-                 (IRValue *) ir_jump(IRB_LAST(b)->bops[1]));
-    } else {
-      ir_replace((IRValue *) IRB_LAST(b),
-                 (IRValue *) ir_jump(IRB_LAST(b)->bops[2]));
-    }
-  }
-
-  if (!b->is_entry && IRB_FIRST(b) == IRB_LAST(b) &&
-      IRB_LAST(b)->opc == IR_JP) {
-    b = (IRBlock *) ir_replace((IRValue *) b, (IRValue *) IRB_LAST(b)->bops[0]);
-  }
-
-  BPASS_REC_ALL(fix_cfg);
-
-BPASS_END(fix_cfg)
-
 BPASS_BEGIN(setup_rpo, IRBlock **res)
   if (b->is_exit)
     return;
-  BPASS_REC_ALL(setup_rpo, res);
+
+  switch (IRB_LAST(b)->opc) {
+  case IR_JP: PASS_REC(setup_rpo, IRB_LAST(b)->bops[0], res); break;
+  case IR_BR:
+    if (IRB_LAST(b)->bops[1]->is_post_loop) {
+      PASS_REC(setup_rpo, IRB_LAST(b)->bops[1], res);
+      PASS_REC(setup_rpo, IRB_LAST(b)->bops[2], res);
+    } else {
+      PASS_REC(setup_rpo, IRB_LAST(b)->bops[2], res);
+      PASS_REC(setup_rpo, IRB_LAST(b)->bops[1], res);
+    }
+    break;
+  }
+
   b->rpo_next = *res;
   *res = b;
 BPASS_END(setup_rpo, &(IRBlock *) {f->exit})
@@ -177,7 +163,12 @@ IPASS_BEGIN(numbering, int *counter)
   IPASS_REC_ALL(numbering, counter);
   if (IROPC_HASRES(i->opc))
     i->hdr.id = (*counter)++;
-  IPASS_BBEGIN(numbering, int counter = 0)
+  IPASS_BBEGIN(numbering, ({
+                 int lcount = 0;
+                 for (IRLocal *l = f->locals; l; l = l->next)
+                   l->id = lcount++;
+               });
+               int counter = 0)
   b->hdr.id = counter++;
 IPASS_END(numbering, &counter)
 
@@ -251,17 +242,16 @@ void irprint(IRProgram *p, FILE *out) {
 void codegen(Obj *prog, FILE *out) {
   IRProgram *p = irgen(prog);
 
-  IR_RUNPASS(irpass_fix_cfg, p);
+  IR_RUNPASS(irpass_opt_cfg, p);
   IR_RUNPASS(irpass_setup_rpo, p);
 
   IR_RUNPASS(irpass_constant_fold, p);
 
-  IR_RUNPASS(irpass_fix_cfg, p);
+  IR_RUNPASS(irpass_opt_cfg, p);
   IR_RUNPASS(irpass_setup_rpo, p);
   //  TODO: optimize more
 
-  IR_RUNPASS(irpass_numbering, p, int lcount = 0;
-             for (IRLocal *l = f->locals; l; l = l->next) l->id = lcount++;);
+  IR_RUNPASS(irpass_numbering, p);
   IR_RUNPASS(irpass_calc_leaf, p);
 
 #if EMIT_IR

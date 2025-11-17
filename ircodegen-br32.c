@@ -59,6 +59,18 @@ static void gen_movr(int dstreg, int srcreg) {
 }
 
 static int alloc_saved() {
+  if (cur_fun->is_leaf) {
+    for (int i = ARGSSTART; i < ARGSSTART + NARGS; i++) {
+      if (usedreg[i])
+        continue;
+      return i;
+    }
+    for (int i = TEMPSTART; i < TEMPSTART + NTEMP; i++) {
+      if (usedreg[i])
+        continue;
+      return i;
+    }
+  }
   for (int i = SAVEDSTART; i < SAVEDSTART + NSAVED; i++) {
     if (usedreg[i])
       continue;
@@ -187,6 +199,25 @@ static void gen_i_fixed(IRInstr *i, int reg) {
 enum { COND_GT, COND_LE, COND_EQ, COND_NE, COND_LT, COND_GE };
 
 static int gen_cmp(IRInstr *i) {
+  if ((i->opc == IR_EQ || i->opc == IR_NE) && i->iops[0]->opc == IR_AND &&
+      i->iops[1]->opc == IR_CONST && i->iops[1]->cval == 0) {
+    if (i->iops[0]->iops[1]->opc == IR_CONST &&
+        is_valid_limm16(i->iops[0]->iops[1]->cval)) {
+      gen_i(i->iops[0]->iops[0]);
+      I("tsti %s, %#x", R[i->iops[0]->iops[0]->curloc.reg],
+        (uint32_t) i->iops[0]->iops[1]->cval);
+    } else {
+      gen_i(i->iops[0]->iops[0]);
+      gen_i(i->iops[0]->iops[1]);
+      I("tst %s, %s", R[i->iops[0]->iops[0]->curloc.reg],
+        R[i->iops[0]->iops[1]->curloc.reg]);
+    }
+    use_i(i->iops[0]->iops[0]);
+    use_i(i->iops[0]->iops[1]);
+    use_i(i->iops[0]);
+    use_i(i->iops[1]);
+    return i->opc == IR_EQ ? COND_EQ : COND_NE;
+  }
   int op1, op2;
   bool imm = false;
   bool swap = false;
@@ -346,13 +377,7 @@ static void gen_i(IRInstr *i) {
     I("adr %s, %s", R[i->curloc.reg], i->gvar->name);
     break;
   case IR_LOCALPTR:
-    if (i->lvar->curloc.sclass != LOC_STACK) {
-      int soff = alloc_stack(WORDSIZE, WORDSIZE);
-      I("stw %s, %d(fp)", R[i->lvar->curloc.reg], -soff);
-      usedreg[i->lvar->curloc.reg] = NULL;
-      i->lvar->curloc.sclass = LOC_STACK;
-      i->lvar->curloc.stackoff = soff;
-    }
+    // assert(i->lvar->curloc.sclass == LOC_STACK);
     alloc_i(i);
     I("addi %s, fp, %d", R[i->curloc.reg], -i->lvar->curloc.stackoff);
     break;
@@ -639,10 +664,11 @@ static char *escape_string_lit(const char *in) {
 void ircodegen(IRProgram *p, FILE *out) {
   output_file = out;
   for (IRFunction *f = p->funs; f; f = f->next) {
-    memset(usedreg, 0, sizeof usedreg);
-    usedreg[ZREG] = usedreg[SPREG] = usedreg[FPREG] = usedreg[LRREG] =
-        LOCKED_REG;
     cur_fun = f;
+    memset(usedreg, 0, sizeof usedreg);
+    usedreg[ZREG] = usedreg[SPREG] = usedreg[FPREG] = LOCKED_REG;
+    if (cur_fun->is_leaf)
+      usedreg[LRREG] = LOCKED_REG;
     maxsaved = SAVEDSTART - 1;
     curstack = f->stacksize = 0;
 
