@@ -53,6 +53,14 @@ typedef enum {
 } IROpc;
 
 #define IROPC_HASRES(opc) ((opc) < IR_STORE && (opc) != IR_RET)
+#define IROPC_ISBINARY(opc)                                                    \
+  ((IR_ADD <= (opc) && (opc) <= IR_SRA) || IROPC_ISCMP(opc))
+#define IROPC_ISCOMM(opc)                                                      \
+  ((opc) == IR_ADD || (opc) == IR_MUL || (opc) == IR_AND || (opc) == IR_OR ||  \
+   (opc) == IR_XOR || (opc) == IR_EQ || (opc) == IR_NE)
+#define IROPC_ISUNARY(opc) (IR_NEG <= (opc) && (opc) <= IR_SEXT)
+#define IROPC_ISCMP(opc) (IR_EQ <= (opc) && (opc) <= IR_ULE)
+#define IROPC_ISMEM(opc) (IR_LOAD <= (opc) && (opc) <= IR_MEMCPY)
 #define IROPC_ISTERM(opc) ((opc) >= IR_JP)
 
 enum {
@@ -109,9 +117,11 @@ struct IRInstr {
   IRValue hdr;
   IRInstr *next;
   IRInstr *prev;
+  IRBlock *parent;
   IROpc opc;
   int numops;
-  int size; // used for load/store/ext
+  int size;         // used for load/store/ext
+  bool is_volatile; // for memory ops
   union {
     uint64_t cval;
     Obj *gvar;
@@ -127,6 +137,7 @@ struct IRInstr {
 
 struct IRBlock {
   IRValue hdr;
+  IRFunction *parent;
   IRInstr root;
   bool is_entry;
   bool is_exit;
@@ -142,7 +153,6 @@ struct IRFunction {
   IRBlock *entry;
   IRBlock *exit;
   Obj *obj;
-  int vctr;
   bool is_leaf;
 
   int stacksize;
@@ -153,21 +163,34 @@ typedef struct {
   Obj *obj;
 } IRProgram;
 
+IRBlock *ir_block(IRFunction *parent);
 void ir_add_instr(IRBlock *b, IRInstr *i);
 void ir_insert_instr(IRInstr *before, IRInstr *i);
 void ir_remove_instr(IRInstr *i);
 void ir_erase_instr(IRInstr *i);
 void ir_set_op(IRInstr *i, int op, IRValue *v);
 void ir_remove_user(IRValue *v, IRInstr *u);
+IRValue *ir_replace(IRValue *old, IRValue *new);
+
+IRInstr *ir_instr(int numops);
+IRInstr *ir_const(uint64_t val);
+IRInstr *ir_unary(IROpc opc, IRInstr *lhs);
+IRInstr *ir_binary(IROpc opc, IRInstr *lhs, IRInstr *rhs);
+IRInstr *ir_varptr(Obj *var);
+IRInstr *ir_load(Type *ty, IRInstr *addr);
+IRInstr *ir_store(Type *ty, IRInstr *addr, IRInstr *data);
+IRInstr *ir_bitfield(IROpc opc, IRInstr *src, IRInstr *dst, int start, int len);
+IRInstr *ir_cast(IRInstr *src, Type *from, Type *to);
+IRInstr *ir_call(IRInstr *f, int nargs, IRInstr **args);
+IRInstr *ir_ret(IRInstr *lhs);
+IRInstr *ir_branch(IRInstr *cond, IRBlock *bt, IRBlock *bf);
+IRInstr *ir_jump(IRBlock *dst);
 
 IRProgram *irgen(Obj *p);
 void irprint(IRProgram *p, FILE *out);
 void ircodegen(IRProgram *p, FILE *out);
 
 void ir_begin_pass(IRValue *v);
-
-void irpass_fix_cfg(IRFunction *f);
-void irpass_setup_rpo(IRFunction *f);
 
 #define IRB_ITER(i, b)                                                         \
   for (IRInstr *i = (b)->root.next, *_next = i->next; i != &(b)->root;         \
@@ -176,6 +199,4 @@ void irpass_setup_rpo(IRFunction *f);
 #define IRB_LAST(b) ((b)->root.prev)
 #define IRB_ISEMPTY(b) ((b)->root.next == &(b)->root)
 
-#define IR_RUNPASS(pass, p)                                                    \
-  for (IRFunction *f = (p)->funs; f; f = f->next)                              \
-    pass(f);
+void irpass_constant_fold(IRFunction *f);

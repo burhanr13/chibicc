@@ -1,7 +1,12 @@
 #include "chibicc.h"
 
 typedef enum {
-  FILE_NONE, FILE_C, FILE_ASM, FILE_OBJ, FILE_AR, FILE_DSO,
+  FILE_NONE,
+  FILE_C,
+  FILE_ASM,
+  FILE_OBJ,
+  FILE_AR,
+  FILE_DSO,
 } FileType;
 
 StringArray include_paths;
@@ -10,6 +15,7 @@ bool opt_fpic;
 
 static FileType opt_x;
 static StringArray opt_include;
+static bool opt_nostdinc;
 static bool opt_E;
 static bool opt_M;
 static bool opt_MD;
@@ -41,7 +47,7 @@ static void usage(int status) {
 
 static bool take_arg(char *arg) {
   char *x[] = {
-    "-o", "-I", "-idirafter", "-include", "-x", "-MF", "-MT", "-Xlinker",
+      "-o", "-I", "-idirafter", "-include", "-x", "-MF", "-MT", "-Xlinker",
   };
 
   for (int i = 0; i < sizeof(x) / sizeof(*x); i++)
@@ -50,20 +56,20 @@ static bool take_arg(char *arg) {
   return false;
 }
 
-// static void add_default_include_paths(char *argv0) {
-//   // We expect that chibicc-specific include files are installed
-//   // to ./include relative to argv[0].
-//   strarray_push(&include_paths, format("%s/include", dirname(strdup(argv0))));
+static void add_default_include_paths(char *argv0) {
+  // We expect that chibicc-specific include files are installed
+  // to ./include relative to argv[0].
+  strarray_push(&include_paths, format("%s/include", dirname(strdup(argv0))));
 
-//   // Add standard include paths.
-//   strarray_push(&include_paths, "/usr/local/include");
-//   strarray_push(&include_paths, "/usr/include/x86_64-linux-gnu");
-//   strarray_push(&include_paths, "/usr/include");
+  // Add standard include paths.
+  strarray_push(&include_paths, "/usr/local/include");
+  strarray_push(&include_paths, "/usr/include/x86_64-linux-gnu");
+  strarray_push(&include_paths, "/usr/include");
 
-//   // Keep a copy of the standard include paths for -MMD option.
-//   for (int i = 0; i < include_paths.len; i++)
-//     strarray_push(&std_include_paths, include_paths.data[i]);
-// }
+  // Keep a copy of the standard include paths for -MMD option.
+  for (int i = 0; i < include_paths.len; i++)
+    strarray_push(&std_include_paths, include_paths.data[i]);
+}
 
 static void define(char *str) {
   char *eq = strchr(str, '=');
@@ -103,9 +109,7 @@ static char *quote_makefile(char *s) {
       buf[j++] = '\\';
       buf[j++] = s[i];
       break;
-    default:
-      buf[j++] = s[i];
-      break;
+    default: buf[j++] = s[i]; break;
     }
   }
   return buf;
@@ -172,6 +176,11 @@ static void parse_args(int argc, char **argv) {
 
     if (!strncmp(argv[i], "-I", 2)) {
       strarray_push(&include_paths, argv[i] + 2);
+      continue;
+    }
+
+    if (!strcmp(argv[i], "-nostdinc")) {
+      opt_nostdinc = true;
       continue;
     }
 
@@ -316,18 +325,14 @@ static void parse_args(int argc, char **argv) {
     }
 
     // These options are ignored for now.
-    if (!strncmp(argv[i], "-O", 2) ||
-        !strncmp(argv[i], "-W", 2) ||
-        !strncmp(argv[i], "-g", 2) ||
-        !strncmp(argv[i], "-std=", 5) ||
+    if (!strncmp(argv[i], "-O", 2) || !strncmp(argv[i], "-W", 2) ||
+        !strncmp(argv[i], "-g", 2) || !strncmp(argv[i], "-std=", 5) ||
         !strcmp(argv[i], "-ffreestanding") ||
         !strcmp(argv[i], "-fno-builtin") ||
         !strcmp(argv[i], "-fno-omit-frame-pointer") ||
         !strcmp(argv[i], "-fno-stack-protector") ||
-        !strcmp(argv[i], "-fno-strict-aliasing") ||
-        !strcmp(argv[i], "-m64") ||
-        !strcmp(argv[i], "-mno-red-zone") ||
-        !strcmp(argv[i], "-w"))
+        !strcmp(argv[i], "-fno-strict-aliasing") || !strcmp(argv[i], "-m64") ||
+        !strcmp(argv[i], "-mno-red-zone") || !strcmp(argv[i], "-w"))
       continue;
 
     if (argv[i][0] == '-' && argv[i][1] != '\0')
@@ -406,7 +411,8 @@ static void run_subprocess(char **argv) {
 
   // Wait for the child process to finish.
   int status;
-  while (wait(&status) > 0);
+  while (wait(&status) > 0)
+    ;
   if (status != 0) {
     fprintf(stderr, "error %d from subprocess\n", WTERMSIG(status));
     exit(1);
@@ -600,9 +606,9 @@ static char *find_libpath(void) {
 
 static char *find_gcc_libpath(void) {
   char *paths[] = {
-    "/usr/lib/gcc/x86_64-linux-gnu/*/crtbegin.o",
-    "/usr/lib/gcc/x86_64-pc-linux-gnu/*/crtbegin.o", // For Gentoo
-    "/usr/lib/gcc/x86_64-redhat-linux/*/crtbegin.o", // For Fedora
+      "/usr/lib/gcc/x86_64-linux-gnu/*/crtbegin.o",
+      "/usr/lib/gcc/x86_64-pc-linux-gnu/*/crtbegin.o", // For Gentoo
+      "/usr/lib/gcc/x86_64-redhat-linux/*/crtbegin.o", // For Fedora
   };
 
   for (int i = 0; i < sizeof(paths) / sizeof(*paths); i++) {
@@ -705,7 +711,8 @@ int main(int argc, char **argv) {
   parse_args(argc, argv);
 
   if (opt_cc1) {
-    // add_default_include_paths(argv[0]);
+    if (!opt_nostdinc)
+      add_default_include_paths(argv[0]);
     cc1();
     return 0;
   }

@@ -979,6 +979,12 @@ static Token *preprocess2(Token *tok) {
     if (equal(tok, "error"))
       error_tok(tok, "error");
 
+    if (equal(tok, "warning")) {
+      warn_tok(tok, "warning: %s", tok->next->str);
+      tok = skip_line(tok->next->next);
+      continue;
+    }
+
     // `#`-only line is legal. It's called a null directive.
     if (tok->at_bol)
       continue;

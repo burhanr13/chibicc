@@ -94,9 +94,18 @@ static void clobber_temp() {
   for (int i = TEMPSTART; i < TEMPSTART + NTEMP; i++) {
     gen_spill(i);
   }
+  if (usedreg[LRREG] != LOCKED_REG)
+    gen_spill(LRREG);
 }
 
 static int alloc_temp() {
+  if (cur_fun->is_leaf) {
+    for (int i = ARGSSTART; i < ARGSSTART + NARGS; i++) {
+      if (usedreg[i])
+        continue;
+      return i;
+    }
+  }
   for (int i = TEMPSTART; i < TEMPSTART + NTEMP; i++) {
     if (usedreg[i])
       continue;
@@ -256,10 +265,9 @@ static void gen_addr(IRInstr *i, AddrMode *res, int size) {
       res->mode = ADDR_REG_IMM;
       res->base = i->iops[0]->curloc.reg;
       res->offset = i->iops[1]->cval;
-    } else if (i->iops[1]->opc == IR_MUL &&
+    } else if (i->iops[1]->opc == IR_SLL &&
                i->iops[1]->iops[1]->opc == IR_CONST &&
-               i->iops[1]->iops[1]->cval == size) {
-      // TODO: change the check to shl after multiply is converted to shl
+               1 << i->iops[1]->iops[1]->cval == size) {
       gen_i(i->iops[0]);
       gen_i(i->iops[1]->iops[0]);
       use_i(i->iops[0]);
@@ -330,7 +338,7 @@ static void gen_i(IRInstr *i) {
       alloc_i_fixed(i, ZREG);
     } else {
       alloc_i(i);
-      I("movi %s, %#x", R[i->curloc.reg], (uint32_t) i->cval);
+      I("movi %s, %d", R[i->curloc.reg], (uint32_t) i->cval);
     }
     break;
   case IR_GLOBALPTR:
@@ -343,20 +351,14 @@ static void gen_i(IRInstr *i) {
     I("addi %s, fp, %d", R[i->curloc.reg], -i->lvar->curloc.stackoff);
     break;
   case IR_ADD:
-    if (i->iops[0]->opc == IR_CONST && is_valid_aimm16(i->iops[0]->cval)) {
-      gen_i(i->iops[1]);
-      use_i(i->iops[0]);
-      use_i(i->iops[1]);
-      alloc_i(i);
-      I("addi %s, %s, %d", R[i->curloc.reg], R[i->iops[1]->curloc.reg],
-        (uint32_t) i->iops[0]->cval);
-    } else if (i->iops[1]->opc == IR_CONST &&
-               is_valid_aimm16(i->iops[1]->cval)) {
+  case IR_SUB: {
+    const char *opcode = (i->opc == IR_ADD) ? "add" : "sub";
+    if (i->iops[1]->opc == IR_CONST && is_valid_aimm16(i->iops[1]->cval)) {
       gen_i(i->iops[0]);
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("addi %s, %s, %d", R[i->curloc.reg], R[i->iops[0]->curloc.reg],
+      I("%si %s, %s, %d", opcode, R[i->curloc.reg], R[i->iops[0]->curloc.reg],
         (uint32_t) i->iops[1]->cval);
     } else {
       gen_i(i->iops[0]);
@@ -364,52 +366,18 @@ static void gen_i(IRInstr *i) {
       use_i(i->iops[0]);
       use_i(i->iops[1]);
       alloc_i(i);
-      I("add %s, %s, %s", R[i->curloc.reg], R[i->iops[0]->curloc.reg],
+      I("%s %s, %s, %s", opcode, R[i->curloc.reg], R[i->iops[0]->curloc.reg],
         R[i->iops[1]->curloc.reg]);
     }
     break;
-  case IR_SUB:
-    if (i->iops[0]->opc == IR_CONST && is_valid_aimm16(i->iops[0]->cval)) {
-      gen_i(i->iops[1]);
-      use_i(i->iops[0]);
-      use_i(i->iops[1]);
-      alloc_i(i);
-      I("neg %s, %s", R[i->curloc.reg], R[i->iops[1]->curloc.reg]);
-      I("addi %s, %s, %d", R[i->curloc.reg], R[i->curloc.reg],
-        (uint32_t) i->iops[0]->cval);
-    } else if (i->iops[1]->opc == IR_CONST &&
-               is_valid_aimm16(i->iops[1]->cval)) {
-      gen_i(i->iops[0]);
-      use_i(i->iops[0]);
-      use_i(i->iops[1]);
-      alloc_i(i);
-      I("subi %s, %s, %d", R[i->curloc.reg], R[i->iops[0]->curloc.reg],
-        (uint32_t) i->iops[1]->cval);
-    } else {
-      gen_i(i->iops[0]);
-      gen_i(i->iops[1]);
-      use_i(i->iops[0]);
-      use_i(i->iops[1]);
-      alloc_i(i);
-      I("sub %s, %s, %s", R[i->curloc.reg], R[i->iops[0]->curloc.reg],
-        R[i->iops[1]->curloc.reg]);
-    }
-    break;
+  }
   case IR_AND:
   case IR_OR:
   case IR_XOR: {
     const char *opcode = (i->opc == IR_AND)  ? "and"
                          : (i->opc == IR_OR) ? "or"
                                              : "xor";
-    if (i->iops[0]->opc == IR_CONST && is_valid_limm16(i->iops[0]->cval)) {
-      gen_i(i->iops[1]);
-      use_i(i->iops[0]);
-      use_i(i->iops[1]);
-      alloc_i(i);
-      I("%si %s, %s, %#x", opcode, R[i->curloc.reg], R[i->iops[1]->curloc.reg],
-        (uint32_t) i->iops[0]->cval);
-    } else if (i->iops[1]->opc == IR_CONST &&
-               is_valid_limm16(i->iops[1]->cval)) {
+    if (i->iops[1]->opc == IR_CONST && is_valid_limm16(i->iops[1]->cval)) {
       gen_i(i->iops[0]);
       use_i(i->iops[0]);
       use_i(i->iops[1]);
@@ -452,19 +420,16 @@ static void gen_i(IRInstr *i) {
     break;
   }
   case IR_NEG:
+  case IR_NOT: {
+    const char *opcode = i->opc == IR_NEG ? "neg" : "not";
     gen_i(i->iops[0]);
     use_i(i->iops[0]);
     alloc_i(i);
-    I("neg %s, %s", R[i->curloc.reg], R[i->iops[0]->curloc.reg]);
+    I("%s %s, %s", opcode, R[i->curloc.reg], R[i->iops[0]->curloc.reg]);
     break;
-  case IR_NOT:
-    gen_i(i->iops[0]);
-    use_i(i->iops[0]);
-    alloc_i(i);
-    I("not %s, %s", R[i->curloc.reg], R[i->iops[0]->curloc.reg]);
-    break;
+  }
   case IR_UEXT:
-  case IR_SEXT: {
+  case IR_SEXT:
     if (i->iops[0]->opc == IR_LOAD &&
         !(i->iops[0]->iops[0]->opc == IR_LOCALPTR &&
           i->iops[0]->iops[0]->lvar->curloc.sclass == LOC_REG) &&
@@ -486,7 +451,6 @@ static void gen_i(IRInstr *i) {
       }
     }
     break;
-  }
   case IR_EQ:
   case IR_NE:
   case IR_SLT:
@@ -500,8 +464,22 @@ static void gen_i(IRInstr *i) {
     I("%s %s", opcodes[cond], R[i->curloc.reg]);
     break;
   }
-  case IR_CALL: {
-    cur_fun->is_leaf = false;
+  case IR_MUL:
+  case IR_SDIV:
+  case IR_UDIV: // TODO: separate udiv
+    gen_spill(ARGSSTART);
+    gen_spill(ARGSSTART + 1);
+    gen_i_fixed(i->iops[0], ARGSSTART);
+    gen_i_fixed(i->iops[1], ARGSSTART + 1);
+    gen_mov(ARGSSTART, &i->iops[0]->curloc);
+    gen_mov(ARGSSTART + 1, &i->iops[1]->curloc);
+    use_i(i->iops[0]);
+    use_i(i->iops[1]);
+    clobber_temp();
+    I("jl %s", i->opc == IR_MUL ? "__mul" : "__div");
+    alloc_i_fixed(i, RETREG);
+    break;
+  case IR_CALL:
     // TODO: stack args
     for (int a = 1; a < i->numops; a++) {
       if (i->iops[a]->curloc.sclass == LOC_UNALLOC) {
@@ -526,8 +504,7 @@ static void gen_i(IRInstr *i) {
     }
     alloc_i_fixed(i, RETREG);
     break;
-  }
-  case IR_LOAD: {
+  case IR_LOAD:
     if (i->iops[0]->opc == IR_LOCALPTR &&
         i->iops[0]->lvar->curloc.sclass == LOC_REG) {
       int r = i->iops[0]->lvar->curloc.reg;
@@ -540,18 +517,17 @@ static void gen_i(IRInstr *i) {
     }
     break;
   }
-  }
 }
 
 static void gen_b(IRBlock *b) {
   for (; b; b = b->rpo_next) {
+    b->hdr.visited = true;
     P(".B%d:", b->hdr.id);
     IRB_ITER(i, b) {
       switch (i->opc) {
-      case IR_STORE: {
+      case IR_STORE:
         if (i->iops[0]->opc == IR_LOCALPTR &&
             i->iops[0]->lvar->curloc.sclass == LOC_REG) {
-          int r = i->iops[0]->lvar->curloc.reg;
           gen_i_fixed(i->iops[1], i->iops[0]->lvar->curloc.reg);
         } else {
           AddrMode amod;
@@ -578,19 +554,29 @@ static void gen_b(IRBlock *b) {
           }
         }
         break;
-      }
       case IR_JP:
         if (b->rpo_next != i->bops[0])
           I("jp .B%d", i->ops[0]->id);
         break;
       case IR_BR: {
         const char *opcodes[] = {"bgt", "ble", "beq", "bne", "blt", "bge"};
-        int cond = gen_cmp(i->iops[0]);
-        use_i(i->iops[0]);
-        if (b->rpo_next != i->bops[1])
-          I("%s .B%d", opcodes[cond], i->ops[1]->id);
-        if (b->rpo_next != i->bops[2])
-          I("%s .B%d", opcodes[cond ^ 1], i->ops[2]->id);
+        if (i->iops[0]->opc == IR_CONST) {
+          if (i->iops[0]->cval) {
+            if (b->rpo_next != i->bops[1])
+              I("jp .B%d", i->ops[1]->id);
+          } else {
+            if (b->rpo_next != i->bops[2])
+              I("jp .B%d", i->ops[2]->id);
+          }
+        } else {
+          assert(IROPC_ISCMP(i->iops[0]->opc));
+          int cond = gen_cmp(i->iops[0]);
+          use_i(i->iops[0]);
+          if (b->rpo_next != i->bops[1])
+            I("%s .B%d", opcodes[cond], i->ops[1]->id);
+          if (b->rpo_next != i->bops[2])
+            I("%s .B%d", opcodes[cond ^ 1], i->ops[2]->id);
+        }
         break;
       }
       case IR_RET:
@@ -647,20 +633,27 @@ void ircodegen(IRProgram *p, FILE *out) {
     usedreg[ZREG] = usedreg[SPREG] = usedreg[FPREG] = usedreg[LRREG] =
         LOCKED_REG;
     cur_fun = f;
-    f->is_leaf = true;
     maxsaved = SAVEDSTART - 1;
     curstack = f->stacksize = 0;
 
     // TODO: handle stack args/ struct args
+    int argidx = -1;
     for (IRLocal *l = f->locals; l; l = l->next) {
+      if (l->is_param)
+        argidx++;
       if (!l->numuses)
         continue;
       if (l->obj->ty->size <= WORDSIZE && !l->obj->ty->is_volatile) {
-        int s = alloc_saved();
-        if (s >= 0) {
+        int r;
+        if (l->is_param && f->is_leaf) {
+          r = ARGSSTART + argidx;
+        } else {
+          r = alloc_saved();
+        }
+        if (r >= 0) {
           l->curloc.sclass = LOC_REG;
-          l->curloc.reg = s;
-          usedreg[s] = LOCKED_REG;
+          l->curloc.reg = r;
+          usedreg[r] = LOCKED_REG;
           continue;
         }
       }

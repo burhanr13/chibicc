@@ -4,50 +4,45 @@ static IRFunction *cur_fun;
 static IRBlock *cur_block;
 
 static IRBlock *new_block() {
-  IRBlock *b = calloc(1, sizeof *b);
-  b->hdr.vt = IRV_BLOCK;
-  b->hdr.id = cur_fun->vctr++;
-  b->root.next = b->root.prev = &b->root;
-  return b;
+  return ir_block(cur_fun);
 }
 
 static void add_instr(IRInstr *i) {
   ir_add_instr(cur_block, i);
 }
 
-static IRInstr *new_instr(int numops) {
+IRInstr *ir_instr(int numops) {
   IRInstr *i = calloc(1, sizeof *i);
   i->hdr.vt = IRV_INSTR;
-  i->hdr.id = cur_fun->vctr++;
   i->numops = numops;
   i->ops = calloc(numops, sizeof(IRValue *));
   return i;
 }
 
-static IRInstr *ir_const(uint64_t val) {
-  IRInstr *i = new_instr(0);
+IRInstr *ir_const(uint64_t val) {
+  IRInstr *i = ir_instr(0);
   i->opc = IR_CONST;
   i->cval = val;
   return i;
 }
 
-static IRInstr *ir_unary(IROpc opc, IRInstr *lhs) {
-  IRInstr *i = new_instr(1);
+IRInstr *ir_unary(IROpc opc, IRInstr *lhs) {
+  IRInstr *i = ir_instr(1);
   i->opc = opc;
   ir_set_op(i, 0, (IRValue *) lhs);
   return i;
 }
 
-static IRInstr *ir_binary(IROpc opc, IRInstr *lhs, IRInstr *rhs) {
-  IRInstr *i = new_instr(2);
+IRInstr *ir_binary(IROpc opc, IRInstr *lhs, IRInstr *rhs) {
+  IRInstr *i = ir_instr(2);
   i->opc = opc;
   ir_set_op(i, 0, (IRValue *) lhs);
   ir_set_op(i, 1, (IRValue *) rhs);
   return i;
 }
 
-static IRInstr *ir_varptr(Obj *var) {
-  IRInstr *i = new_instr(0);
+IRInstr *ir_varptr(Obj *var) {
+  IRInstr *i = ir_instr(0);
   if (var->is_local) {
     i->opc = IR_LOCALPTR;
     i->lvar = var->irlocal;
@@ -59,7 +54,7 @@ static IRInstr *ir_varptr(Obj *var) {
   return i;
 }
 
-static IRInstr *ir_load(Type *ty, IRInstr *addr) {
+IRInstr *ir_load(Type *ty, IRInstr *addr) {
   switch (ty->kind) {
   case TY_ARRAY:
   case TY_STRUCT:
@@ -67,15 +62,16 @@ static IRInstr *ir_load(Type *ty, IRInstr *addr) {
   case TY_FUNC:
   case TY_VLA: return addr;
   }
-  IRInstr *i = new_instr(1);
+  IRInstr *i = ir_instr(1);
   i->opc = IR_LOAD;
   ir_set_op(i, 0, (IRValue *) addr);
   i->size = ty->size;
+  i->is_volatile = ty->is_volatile;
   return i;
 }
 
-static IRInstr *ir_store(Type *ty, IRInstr *addr, IRInstr *data) {
-  IRInstr *i = new_instr(2);
+IRInstr *ir_store(Type *ty, IRInstr *addr, IRInstr *data) {
+  IRInstr *i = ir_instr(2);
   switch (ty->kind) {
   case TY_STRUCT:
   case TY_UNION: i->opc = IR_MEMCPY; break;
@@ -84,12 +80,13 @@ static IRInstr *ir_store(Type *ty, IRInstr *addr, IRInstr *data) {
   ir_set_op(i, 0, (IRValue *) addr);
   ir_set_op(i, 1, (IRValue *) data);
   i->size = ty->size;
+  i->is_volatile = ty->is_volatile;
   return i;
 }
 
-static IRInstr *ir_bitfield(IROpc opc, IRInstr *src, IRInstr *dst, int start,
-                            int len) {
-  IRInstr *i = new_instr(opc == IR_BFI ? 4 : 3);
+IRInstr *ir_bitfield(IROpc opc, IRInstr *src, IRInstr *dst, int start,
+                     int len) {
+  IRInstr *i = ir_instr(opc == IR_BFI ? 4 : 3);
   i->opc = opc;
   ir_set_op(i, 0, (IRValue *) src);
   if (opc == IR_BFI) {
@@ -103,10 +100,10 @@ static IRInstr *ir_bitfield(IROpc opc, IRInstr *src, IRInstr *dst, int start,
   return i;
 }
 
-static IRInstr *ir_cast(IRInstr *src, Type *from, Type *to) {
+IRInstr *ir_cast(IRInstr *src, Type *from, Type *to) {
   if (from->size >= to->size || from->kind == TY_ARRAY)
     return src;
-  IRInstr *i = new_instr(1);
+  IRInstr *i = ir_instr(1);
   i->opc = from->is_unsigned ? IR_UEXT : IR_SEXT;
   if (from->size == 3) {
     printf("wtf\n");
@@ -116,8 +113,8 @@ static IRInstr *ir_cast(IRInstr *src, Type *from, Type *to) {
   return i;
 }
 
-static IRInstr *ir_call(IRInstr *f, int nargs, IRInstr **args) {
-  IRInstr *i = new_instr(1 + nargs);
+IRInstr *ir_call(IRInstr *f, int nargs, IRInstr **args) {
+  IRInstr *i = ir_instr(1 + nargs);
   i->opc = IR_CALL;
   ir_set_op(i, 0, (IRValue *) f);
   for (int a = 0; a < nargs; a++) {
@@ -126,15 +123,15 @@ static IRInstr *ir_call(IRInstr *f, int nargs, IRInstr **args) {
   return i;
 }
 
-static IRInstr *ir_ret(IRInstr *lhs) {
-  IRInstr *i = new_instr(1);
+IRInstr *ir_ret(IRInstr *lhs) {
+  IRInstr *i = ir_instr(1);
   i->opc = IR_RET;
   ir_set_op(i, 0, (IRValue *) lhs);
   return i;
 }
 
-static IRInstr *ir_branch(IRInstr *cond, IRBlock *bt, IRBlock *bf) {
-  IRInstr *i = new_instr(3);
+IRInstr *ir_branch(IRInstr *cond, IRBlock *bt, IRBlock *bf) {
+  IRInstr *i = ir_instr(3);
   i->opc = IR_BR;
   ir_set_op(i, 0, (IRValue *) cond);
   ir_set_op(i, 1, (IRValue *) bt);
@@ -142,8 +139,8 @@ static IRInstr *ir_branch(IRInstr *cond, IRBlock *bt, IRBlock *bf) {
   return i;
 }
 
-static IRInstr *ir_jump(IRBlock *dst) {
-  IRInstr *i = new_instr(1);
+IRInstr *ir_jump(IRBlock *dst) {
+  IRInstr *i = ir_instr(1);
   i->opc = IR_JP;
   ir_set_op(i, 0, (IRValue *) dst);
   return i;
@@ -353,7 +350,6 @@ static IRLocal *new_irlocal(Obj *v) {
   if (v->irlocal)
     return v->irlocal;
   IRLocal *iv = calloc(1, sizeof *iv);
-  iv->id = cur_fun->vctr++;
   iv->obj = v;
   v->irlocal = iv;
   return iv;
