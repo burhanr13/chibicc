@@ -27,10 +27,8 @@ typedef enum {
   // extension
   IR_UEXT,
   IR_SEXT,
-  // bitfield
-  IR_UBFE,
-  IR_SBFE,
-  IR_BFI,
+  IR_UBEXT,
+  IR_SBEXT,
   // comparisons
   IR_EQ,
   IR_NE,
@@ -60,7 +58,7 @@ extern const char *ir_opc_names[IR_MAX];
 #define IROPC_ISCOMM(opc)                                                      \
   ((opc) == IR_ADD || (opc) == IR_MUL || (opc) == IR_AND || (opc) == IR_OR ||  \
    (opc) == IR_XOR || (opc) == IR_EQ || (opc) == IR_NE)
-#define IROPC_ISUNARY(opc) (IR_NEG <= (opc) && (opc) <= IR_SEXT)
+#define IROPC_ISUNARY(opc) (IR_NEG <= (opc) && (opc) <= IR_SBEXT)
 #define IROPC_ISCMP(opc) (IR_EQ <= (opc) && (opc) <= IR_ULE)
 #define IROPC_ISMEM(opc) (IR_LOAD <= (opc) && (opc) <= IR_MEMCPY)
 #define IROPC_ISTERM(opc) ((opc) >= IR_JP)

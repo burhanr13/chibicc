@@ -181,11 +181,11 @@ IPASS_BEGIN(calc_leaf, IRFunction *f)
 IPASS_END(calc_leaf, f)
 
 const char *ir_opc_names[IR_MAX] = {
-    "const", "globalptr", "localptr", "add",  "sub",  "mul",  "sdiv", "smod",
-    "udiv",  "umod",      "and",      "or",   "xor",  "sll",  "srl",  "sra",
-    "neg",   "not",       "uext",     "sext", "ubfe", "sbfe", "bfi",  "eq",
-    "ne",    "slt",       "sle",      "ult",  "ule",  "call", "ret",  "load",
-    "store", "memcpy",    "jp",       "br",
+    "const", "globalptr", "localptr", "add",   "sub",    "mul",  "sdiv",
+    "smod",  "udiv",      "umod",     "and",   "or",     "xor",  "sll",
+    "srl",   "sra",       "neg",      "not",   "uext",   "sext", "ubext",
+    "sbext", "eq",        "ne",       "slt",   "sle",    "ult",  "ule",
+    "call",  "ret",       "load",     "store", "memcpy", "jp",   "br",
 };
 
 #define P(fmt, ...) fprintf(output_file, fmt "\n" __VA_OPT__(, ) __VA_ARGS__)
@@ -229,8 +229,8 @@ void irprint(IRProgram *p, FILE *out) {
   for (IRFunction *f = p->funs; f; f = f->next) {
     P("\nfunction%s %s", f->obj->is_static ? " static" : "", f->obj->name);
     for (IRLocal *v = f->locals; v; v = v->next) {
-      P("local $%d (%s) %d %d ; %d uses", v->id, v->obj->name,
-        v->obj->ty->size, v->obj->align, v->numuses);
+      P("local $%d (%s) %d %d ; %d uses", v->id, v->obj->name, v->obj->ty->size,
+        v->obj->align, v->numuses);
     }
     irpass_print(f);
   }

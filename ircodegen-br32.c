@@ -482,6 +482,28 @@ static void gen_i(IRInstr *i) {
       }
     }
     break;
+  case IR_UBEXT:
+  case IR_SBEXT:
+    if ((i->iops[0]->opc == IR_SRL || i->iops[0]->opc == IR_SRA) &&
+        i->iops[0]->iops[1]->opc == IR_CONST) {
+      int bitoff = i->iops[0]->iops[1]->cval;
+      if (bitoff + i->size <= 32) {
+        gen_i(i->iops[0]->iops[0]);
+        use_i(i->iops[0]->iops[0]);
+        use_i(i->iops[0]->iops[1]);
+        use_i(i->iops[0]);
+        alloc_i(i);
+        I("%sbfe %s, %s, %d, %d", i->opc == IR_UBEXT ? "u" : "s",
+          R[i->curloc.reg], R[i->iops[0]->curloc.reg], bitoff, i->size);
+        break;
+      }
+    }
+    gen_i(i->iops[0]);
+    use_i(i->iops[0]);
+    alloc_i(i);
+    I("%sbfe %s, %s, 0, %d", i->opc == IR_UBEXT ? "u" : "s", R[i->curloc.reg],
+      R[i->iops[0]->curloc.reg], i->size);
+    break;
   case IR_EQ:
   case IR_NE:
   case IR_SLT:
@@ -677,19 +699,29 @@ void ircodegen(IRProgram *p, FILE *out) {
     curstack = f->stacksize = 0;
 
     // TODO: handle stack args/ struct args
-    int argidx = -1;
+    if (f->is_leaf) {
+      int argnum = 0;
+      for (IRLocal *p = f->params; p; p = p->next) {
+        if (!p->is_param)
+          continue;
+        if (!p->numuses) {
+          argnum++;
+          continue;
+        }
+        p->curloc.sclass = LOC_REG;
+        p->curloc.reg = ARGSSTART + argnum;
+        usedreg[ARGSSTART + argnum] = LOCKED_REG;
+        argnum++;
+      }
+    }
+
     for (IRLocal *l = f->locals; l; l = l->next) {
-      if (l->is_param)
-        argidx++;
+      if (l->curloc.sclass != LOC_UNALLOC)
+        continue;
       if (!l->numuses)
         continue;
       if (l->obj->ty->size <= WORDSIZE && !l->obj->ty->is_volatile) {
-        int r;
-        if (l->is_param && f->is_leaf) {
-          r = ARGSSTART + argidx;
-        } else {
-          r = alloc_saved();
-        }
+        int r = alloc_saved();
         if (r >= 0) {
           l->curloc.sclass = LOC_REG;
           l->curloc.reg = r;

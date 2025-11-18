@@ -162,6 +162,7 @@ struct Obj {
   Obj *locals;
   Obj *va_area;
   Obj *alloca_bottom;
+  Obj *cond_result; // for ?:/&&/||
   int stack_size;
 
   // Static inline function

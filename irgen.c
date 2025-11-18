@@ -132,31 +132,10 @@ IRInstr *ir_store(Type *ty, IRInstr *addr, IRInstr *data) {
   return i;
 }
 
-IRInstr *ir_bitfield(IROpc opc, IRInstr *src, IRInstr *dst, int start,
-                     int len) {
-  IRInstr *i = ir_instr(opc == IR_BFI ? 4 : 3);
-  i->opc = opc;
-  ir_set_op(i, 0, (IRValue *) src);
-  if (opc == IR_BFI) {
-    ir_set_op(i, 1, (IRValue *) dst);
-    ir_set_op(i, 2, (IRValue *) ir_const(start));
-    ir_set_op(i, 3, (IRValue *) ir_const(len));
-  } else {
-    ir_set_op(i, 1, (IRValue *) ir_const(start));
-    ir_set_op(i, 2, (IRValue *) ir_const(len));
-  }
-  return i;
-}
-
-IRInstr *ir_cast(IRInstr *src, Type *from, Type *to) {
-  if (from->size >= to->size || from->kind == TY_ARRAY)
-    return src;
+IRInstr *ir_extend(IROpc opc, IRInstr *src, int size) {
   IRInstr *i = ir_instr(1);
-  i->opc = from->is_unsigned ? IR_UEXT : IR_SEXT;
-  if (from->size == 3) {
-    printf("wtf\n");
-  }
-  i->size = from->size;
+  i->opc = opc;
+  i->size = size;
   ir_set_op(i, 0, (IRValue *) src);
   return i;
 }
@@ -214,6 +193,31 @@ static IRInstr *gen_addr(Node *e) {
   error_tok(e->tok, "not an lvalue");
 }
 
+static void gen_condbr(Node *c, IRBlock *bt, IRBlock *bf) {
+  switch (c->kind) {
+  case ND_NOT: gen_condbr(c->lhs, bf, bt); return;
+  case ND_LOGAND:
+  case ND_LOGOR: {
+    IRBlock *mid = new_block();
+    if (c->kind == ND_LOGAND) {
+      gen_condbr(c->lhs, mid, bf);
+    } else {
+      gen_condbr(c->lhs, bt, mid);
+    }
+    cur_block = mid;
+    gen_condbr(c->rhs, bt, bf);
+    return;
+  }
+  case ND_EQ:
+  case ND_NE:
+  case ND_LE:
+  case ND_LT: add_instr(ir_branch(gen_expr(c), bt, bf)); return;
+  default:
+    add_instr(ir_branch(ir_binary(IR_NE, gen_expr(c), ir_const(0)), bt, bf));
+    return;
+  }
+}
+
 static IRInstr *gen_expr(Node *e) {
   switch (e->kind) {
   case ND_NULL_EXPR: return ir_const(0);
@@ -224,8 +228,9 @@ static IRInstr *gen_expr(Node *e) {
     IRInstr *addr = gen_addr(e);
     IRInstr *res = ir_load(e->ty, addr);
     if (e->member->is_bitfield) {
-      res = ir_bitfield(e->member->ty->is_unsigned ? IR_UBFE : IR_SBFE, res,
-                        NULL, e->member->bit_offset, e->member->bit_width);
+      res = ir_extend(e->member->ty->is_unsigned ? IR_UBEXT : IR_SEXT,
+                      ir_binary(IR_SRL, res, ir_const(e->member->bit_offset)),
+                      e->member->bit_width);
     }
     return res;
   }
@@ -237,19 +242,77 @@ static IRInstr *gen_expr(Node *e) {
     IRInstr *stval = val;
     if (e->lhs->kind == ND_MEMBER && e->lhs->member->is_bitfield) {
       IRInstr *dst = ir_load(e->lhs->member->ty, addr);
-      stval = ir_bitfield(IR_BFI, val, dst, e->lhs->member->bit_offset,
-                          e->lhs->member->bit_width);
+      uint64_t mask = -1;
+      mask >>= 64 - e->lhs->member->bit_width;
+      mask <<= e->lhs->member->bit_offset;
+      stval = ir_binary(
+          IR_OR, ir_binary(IR_AND, dst, ir_const(~mask)),
+          ir_binary(IR_SLL, ir_extend(IR_UBEXT, val, e->lhs->member->bit_width),
+                    ir_const(e->lhs->member->bit_offset)));
     }
     add_instr(ir_store(e->ty, addr, stval));
     return val;
   }
   case ND_STMT_EXPR: printf("stubbed: stmt expr\n"); return ir_const(0); // TODO
   case ND_COMMA: add_instr(gen_expr(e->lhs)); return gen_expr(e->rhs);
-  case ND_CAST: return ir_cast(gen_expr(e->lhs), e->lhs->ty, e->ty);
+  case ND_CAST:
+    if (e->lhs->ty->size >= e->ty->size || e->lhs->ty->kind == TY_ARRAY)
+      return gen_expr(e->lhs);
+    return ir_extend(e->lhs->ty->is_unsigned ? IR_UEXT : IR_SEXT,
+                     gen_expr(e->lhs), e->lhs->ty->size);
   case ND_MEMZERO: printf("stubbed: memzero\n"); return ir_const(0); // TODO
-  case ND_LOGAND:
-  case ND_LOGOR:
-  case ND_COND: printf("stubbed: land/lor/cond\n"); return ir_const(0); // TODO
+  case ND_LOGAND: {
+    IRBlock *bt = new_block();
+    IRBlock *post = new_block();
+    add_instr(
+        ir_store(ty_int, ir_varptr(cur_fun->obj->cond_result), ir_const(0)));
+    gen_condbr(e->lhs, bt, post);
+
+    cur_block = bt;
+    add_instr(ir_store(ty_int, ir_varptr(cur_fun->obj->cond_result),
+                       ir_binary(IR_NE, gen_expr(e->rhs), ir_const(0))));
+    add_instr(ir_jump(post));
+
+    cur_block = post;
+    return ir_load(ty_int, ir_varptr(cur_fun->obj->cond_result));
+  }
+  case ND_LOGOR: {
+    IRBlock *bf = new_block();
+    IRBlock *post = new_block();
+    add_instr(
+        ir_store(ty_int, ir_varptr(cur_fun->obj->cond_result), ir_const(1)));
+    gen_condbr(e->lhs, post, bf);
+
+    cur_block = bf;
+    add_instr(ir_store(ty_int, ir_varptr(cur_fun->obj->cond_result),
+                       ir_binary(IR_NE, gen_expr(e->rhs), ir_const(0))));
+    add_instr(ir_jump(post));
+
+    cur_block = post;
+    return ir_load(ty_int, ir_varptr(cur_fun->obj->cond_result));
+  }
+  case ND_COND: {
+    if (e->ty->kind == TY_STRUCT || e->ty->kind == TY_UNION)
+      return ir_const(0); // TODO
+
+    IRBlock *bt = new_block();
+    IRBlock *bf = new_block();
+    IRBlock *post = new_block();
+    gen_condbr(e->cond, bt, bf);
+
+    cur_block = bt;
+    add_instr(ir_store(e->ty, ir_varptr(cur_fun->obj->cond_result),
+                       gen_expr(e->then)));
+    add_instr(ir_jump(post));
+
+    cur_block = bf;
+    add_instr(ir_store(e->ty, ir_varptr(cur_fun->obj->cond_result),
+                       gen_expr(e->els)));
+    add_instr(ir_jump(post));
+
+    cur_block = post;
+    return ir_load(e->ty, ir_varptr(cur_fun->obj->cond_result));
+  }
   case ND_NOT: return ir_binary(IR_EQ, gen_expr(e->lhs), ir_const(0));
   case ND_BITNOT: return ir_unary(IR_NOT, gen_expr(e->lhs));
   case ND_FUNCALL: {
@@ -295,47 +358,24 @@ static IRInstr *gen_expr(Node *e) {
   error_tok(e->tok, "invalid expression");
 }
 
-static void gen_condbr(Node *c, IRBlock *bt, IRBlock *bf) {
-  switch (c->kind) {
-  case ND_NOT: gen_condbr(c->lhs, bf, bt); return;
-  case ND_LOGAND:
-  case ND_LOGOR: {
-    IRBlock *mid = new_block();
-    if (c->kind == ND_LOGAND) {
-      gen_condbr(c->lhs, mid, bf);
-    } else {
-      gen_condbr(c->lhs, bt, mid);
-    }
-    cur_block = mid;
-    gen_condbr(c->rhs, bt, bf);
-    return;
-  }
-  case ND_EQ:
-  case ND_NE:
-  case ND_LE:
-  case ND_LT: add_instr(ir_branch(gen_expr(c), bt, bf)); return;
-  default:
-    add_instr(ir_branch(ir_binary(IR_NE, gen_expr(c), ir_const(0)), bt, bf));
-    return;
-  }
-}
-
 static void gen_stmt(Node *s) {
   switch (s->kind) {
   case ND_IF: {
     IRBlock *then = new_block();
+    IRBlock *els = new_block();
     IRBlock *post = new_block();
-    IRBlock *els = s->els ? new_block() : post;
     gen_condbr(s->cond, then, els);
+
     cur_block = then;
     gen_stmt(s->then);
     add_instr(ir_jump(post));
+
     cur_block = els;
-    if (s->els) {
+    if (s->els)
       gen_stmt(s->els);
-      add_instr(ir_jump(post));
-      cur_block = post;
-    }
+    add_instr(ir_jump(post));
+
+    cur_block = post;
     return;
   }
   case ND_FOR: {
@@ -459,7 +499,7 @@ static IRFunction *gen_function(Obj *f) {
   add_instr(ir_jump(fun->exit));
 
   resolve_gotos();
-  
+
   return fun;
 }
 

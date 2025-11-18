@@ -3219,6 +3219,7 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
   if (ty->is_variadic)
     fn->va_area = new_lvar("__va_area__", array_of(ty_char, 136));
   fn->alloca_bottom = new_lvar("__alloca_size__", pointer_to(ty_char));
+  fn->cond_result = new_lvar("__cond_res__", ty_ulong);
 
   tok = skip(tok, "{");
 
@@ -3227,7 +3228,7 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
   // current function name.
   push_scope("__func__")->var =
       new_string_literal(fn->name, array_of(ty_char, strlen(fn->name) + 1));
-
+  
   // [GNU] __FUNCTION__ is yet another name of __func__.
   push_scope("__FUNCTION__")->var =
       new_string_literal(fn->name, array_of(ty_char, strlen(fn->name) + 1));
