@@ -1,8 +1,6 @@
 #include "ir.h"
 #include "irpass.h"
 
-#define EMIT_IR 0
-
 IRBlock *ir_block(IRFunction *parent) {
   IRBlock *b = calloc(1, sizeof *b);
   b->hdr.vt = IRV_BLOCK;
@@ -91,7 +89,8 @@ void ir_remove_user(IRValue *v, IRInstr *user, int op) {
 }
 
 IRValue *ir_replace(IRValue *old, IRValue *new) {
-  assert(old != new);
+  if (old == new)
+    return new;
   assert(old->vt == new->vt);
 
   if (!old->uses) {
@@ -110,7 +109,8 @@ IRValue *ir_replace(IRValue *old, IRValue *new) {
 
 void ir_merge_block(IRBlock *base, IRBlock *extra) {
   assert(IRB_LAST(base)->opc == IR_JP && IRB_LAST(base)->bops[0] == extra &&
-         extra->hdr.numuses == 1);
+         extra->hdr.numuses == 1 && extra->hdr.uses->user == IRB_LAST(base) &&
+         base != extra);
   IRInstr *oldterm = IRB_LAST(base);
   while (!IRB_ISEMPTY(extra)) {
     IRInstr *i = IRB_FIRST(extra);
@@ -206,8 +206,8 @@ IPASS_BEGIN(print)
 
   switch (i->opc) {
   case IR_CONST: I("%ld", i->cval); break;
-  case IR_GLOBALPTR: I("%%%s", i->gvar->name); break;
-  case IR_LOCALPTR: I("%%%d", i->lvar->id); break;
+  case IR_GLOBALPTR: I("$%s", i->gvar->name); break;
+  case IR_LOCALPTR: I("$%d", i->lvar->id); break;
   case IR_UEXT:
   case IR_SEXT:
   case IR_LOAD:
@@ -229,7 +229,7 @@ void irprint(IRProgram *p, FILE *out) {
   for (IRFunction *f = p->funs; f; f = f->next) {
     P("\nfunction%s %s", f->obj->is_static ? " static" : "", f->obj->name);
     for (IRLocal *v = f->locals; v; v = v->next) {
-      P("local %%%d (%s) %d %d ; %d uses", v->id, v->obj->name,
+      P("local $%d (%s) %d %d ; %d uses", v->id, v->obj->name,
         v->obj->ty->size, v->obj->align, v->numuses);
     }
     irpass_print(f);
@@ -254,9 +254,9 @@ void codegen(Obj *prog, FILE *out) {
   IR_RUNPASS(irpass_numbering, p);
   IR_RUNPASS(irpass_calc_leaf, p);
 
-#if EMIT_IR
-  irprint(p, out);
-#else
-  ircodegen(p, out);
-#endif
+  if (opt_emitir) {
+    irprint(p, out);
+  } else {
+    ircodegen(p, out);
+  }
 }

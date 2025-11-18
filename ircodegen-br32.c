@@ -497,7 +497,9 @@ static void gen_i(IRInstr *i) {
   }
   case IR_MUL:
   case IR_SDIV:
-  case IR_UDIV: // TODO: separate udiv
+  case IR_UDIV:
+  case IR_SMOD:
+  case IR_UMOD: // TODO: separate udiv
     gen_spill(ARGSSTART);
     gen_spill(ARGSSTART + 1);
     gen_i_fixed(i->iops[0], ARGSSTART);
@@ -507,7 +509,9 @@ static void gen_i(IRInstr *i) {
     use_i(i->iops[0]);
     use_i(i->iops[1]);
     clobber_temp();
-    I("jl %s", i->opc == IR_MUL ? "__mul" : "__div");
+    I("jl %s", i->opc == IR_MUL                         ? "__mul"
+               : i->opc == IR_UDIV || i->opc == IR_SDIV ? "__div"
+                                                        : "__mod");
     alloc_i_fixed(i, RETREG);
     break;
   case IR_CALL:

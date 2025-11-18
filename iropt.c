@@ -37,17 +37,17 @@ BPASS_BEGIN(opt_cfg)
 
   BPASS_REC_ALL(opt_cfg);
 
+  if (IRB_LAST(b)->opc == IR_JP && IRB_LAST(b)->bops[0]->hdr.numuses == 1 &&
+      !IRB_LAST(b)->bops[0]->is_exit) {
+    ir_merge_block(b, IRB_LAST(b)->bops[0]);
+  }
+
   if (!b->is_entry && IRB_FIRST(b) == IRB_LAST(b) &&
       IRB_LAST(b)->opc == IR_JP) {
     bool post_loop = b->is_post_loop;
     b = (IRBlock *) ir_replace((IRValue *) b, (IRValue *) IRB_LAST(b)->bops[0]);
     if (post_loop)
       b->is_post_loop = true;
-  }
-
-  if (IRB_LAST(b)->opc == IR_JP && IRB_LAST(b)->bops[0]->hdr.numuses == 1 &&
-      !IRB_LAST(b)->bops[0]->is_exit) {
-    ir_merge_block(b, IRB_LAST(b)->bops[0]);
   }
 
 BPASS_END(opt_cfg)
@@ -57,6 +57,7 @@ BPASS_END(opt_cfg)
 #define OPT(i2) (i = (IRInstr *) ir_replace((IRValue *) i, (IRValue *) (i2)))
 
 int ilog2(int n) {
+  extern int __builtin_ctz(unsigned int);
   int res = __builtin_ctz(n);
   return n == 1 << res ? res : -1;
 }
