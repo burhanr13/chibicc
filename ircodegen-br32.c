@@ -26,19 +26,16 @@ static FILE *output_file;
 static IRFunction *cur_fun;
 static IRVarLoc *usedreg[32];
 static int maxsaved;
-static int curstack;
 #define LOCKED_REG ((IRVarLoc *) -1)
 
-#define P(fmt, ...) fprintf(output_file, fmt "\n" __VA_OPT__(, ) __VA_ARGS__)
+#define L(fmt, ...) fprintf(output_file, fmt "\n" __VA_OPT__(, ) __VA_ARGS__)
 #define I(fmt, ...)                                                            \
   fprintf(output_file, "  " fmt "\n" __VA_OPT__(, ) __VA_ARGS__)
 
 static int alloc_stack(int size, int align) {
-  curstack += size;
-  curstack = align_to(curstack, align);
-  if (curstack > cur_fun->stacksize)
-    cur_fun->stacksize = curstack;
-  return curstack;
+  cur_fun->stacksize += size;
+  cur_fun->stacksize = align_to(cur_fun->stacksize, align);
+  return cur_fun->stacksize;
 }
 
 static void gen_mov(int dstreg, IRVarLoc *src) {
@@ -48,7 +45,7 @@ static void gen_mov(int dstreg, IRVarLoc *src) {
     if (dstreg != src->reg)
       I("mov %s, %s", R[dstreg], R[src->reg]);
   } else if (src->sclass == LOC_STACK) {
-    I("ldw %s, %d(fp)", R[dstreg], src->stackoff);
+    I("ldw %s, %d(fp)", R[dstreg], -src->stackoff);
   }
 }
 
@@ -129,8 +126,12 @@ static int alloc_temp() {
   if (s >= 0)
     return s;
   // TODO: figure out a better way to pick this
-  gen_spill(TEMPSTART);
-  return TEMPSTART;
+  static int lastspill = TEMPSTART;
+  int r = lastspill;
+  gen_spill(lastspill++);
+  if (lastspill >= NTEMP)
+    lastspill = 0;
+  return r;
 }
 
 static void gen_reload(IRVarLoc *loc) {
@@ -167,11 +168,12 @@ static void alloc_i_fixed(IRInstr *i, int reg) {
 }
 
 static void use_i(IRInstr *i) {
+  if (i->curloc.sclass == LOC_STACK) {
+    gen_reload(&i->curloc);
+  }
   if (++i->curuses == i->hdr.numuses) {
     if (i->curloc.sclass == LOC_REG && usedreg[i->curloc.reg] == &i->curloc)
       usedreg[i->curloc.reg] = NULL;
-    else if (i->curloc.sclass == LOC_STACK && i->curloc.stackoff == curstack)
-      curstack -= WORDSIZE;
   }
 }
 
@@ -356,13 +358,11 @@ static void gen_load(int dstreg, AddrMode *amod, bool is_signed, int size) {
 }
 
 static void gen_i(IRInstr *i) {
-  if (i->curloc.sclass == LOC_STACK)
-    gen_reload(&i->curloc);
-  if (i->hdr.visited) {
-    assert(i->curloc.sclass == LOC_REG);
+  if (i->hdr.mark) {
+    assert(i->curloc.sclass != LOC_UNALLOC);
     return;
   }
-  i->hdr.visited = true;
+  i->hdr.mark = true;
   switch (i->opc) {
   case IR_CONST:
     if (i->cval == 0) {
@@ -494,7 +494,8 @@ static void gen_i(IRInstr *i) {
         use_i(i->iops[0]);
         alloc_i(i);
         I("%sbfe %s, %s, %d, %d", i->opc == IR_UBEXT ? "u" : "s",
-          R[i->curloc.reg], R[i->iops[0]->curloc.reg], bitoff, i->size);
+          R[i->curloc.reg], R[i->iops[0]->iops[0]->curloc.reg], bitoff,
+          i->size);
         break;
       }
     }
@@ -561,6 +562,16 @@ static void gen_i(IRInstr *i) {
     }
     alloc_i_fixed(i, RETREG);
     break;
+  case IR_RET:
+    if (i->iops[0]->curloc.sclass == LOC_UNALLOC) {
+      i->iops[0]->curloc.sclass = LOC_REG;
+      i->iops[0]->curloc.reg = RETREG;
+      gen_i(i->iops[0]);
+    } else {
+      gen_mov(RETREG, &i->iops[0]->curloc);
+    }
+    use_i(i->iops[0]);
+    break;
   case IR_LOAD:
     if (i->iops[0]->opc == IR_LOCALPTR &&
         i->iops[0]->lvar->curloc.sclass == LOC_REG) {
@@ -577,79 +588,75 @@ static void gen_i(IRInstr *i) {
       gen_load(i->curloc.reg, &amod, false, i->size);
     }
     break;
+  case IR_STORE:
+    if (i->iops[0]->opc == IR_LOCALPTR &&
+        i->iops[0]->lvar->curloc.sclass == LOC_REG) {
+      gen_i_fixed(i->iops[1], i->iops[0]->lvar->curloc.reg);
+    } else {
+      AddrMode amod;
+      gen_i(i->iops[1]);
+      gen_addr(i->iops[0], &amod, i->size);
+      use_i(i->iops[1]);
+      switch (amod.mode) {
+      case ADDR_REG:
+        I("st%s %s, (%s)", SIZE_SUFFIX(i->size), R[i->iops[1]->curloc.reg],
+          R[amod.base]);
+        break;
+      case ADDR_REG_IMM:
+        I("st%s %s, %d(%s)", SIZE_SUFFIX(i->size), R[i->iops[1]->curloc.reg],
+          amod.offset, R[amod.base]);
+        break;
+      case ADDR_REG_REG:
+        I("st%sx %s, (%s, %s)", SIZE_SUFFIX(i->size), R[i->iops[1]->curloc.reg],
+          R[amod.base], R[amod.offset]);
+        break;
+      case ADDR_REG_IDX:
+        I("st%sx %s, (%s, %s, %d)", SIZE_SUFFIX(i->size),
+          R[i->iops[1]->curloc.reg], R[amod.base], R[amod.offset], i->size);
+        break;
+      }
+    }
+    break;
   }
+  assert(i->curloc.sclass != LOC_STACK);
 }
 
 static void gen_b(IRBlock *b) {
   for (; b; b = b->rpo_next) {
-    b->hdr.visited = true;
-    P(".B%d:", b->hdr.id);
+    b->hdr.mark = true;
+    L(".B%d:", b->hdr.id);
     IRB_ITER(i, b) {
       switch (i->opc) {
-      case IR_STORE:
-        if (i->iops[0]->opc == IR_LOCALPTR &&
-            i->iops[0]->lvar->curloc.sclass == LOC_REG) {
-          gen_i_fixed(i->iops[1], i->iops[0]->lvar->curloc.reg);
-        } else {
-          AddrMode amod;
-          gen_i(i->iops[1]);
-          gen_addr(i->iops[0], &amod, i->size);
-          use_i(i->iops[1]);
-          switch (amod.mode) {
-          case ADDR_REG:
-            I("st%s %s, (%s)", SIZE_SUFFIX(i->size), R[i->iops[1]->curloc.reg],
-              R[amod.base]);
-            break;
-          case ADDR_REG_IMM:
-            I("st%s %s, %d(%s)", SIZE_SUFFIX(i->size),
-              R[i->iops[1]->curloc.reg], amod.offset, R[amod.base]);
-            break;
-          case ADDR_REG_REG:
-            I("st%sx %s, (%s, %s)", SIZE_SUFFIX(i->size),
-              R[i->iops[1]->curloc.reg], R[amod.base], R[amod.offset]);
-            break;
-          case ADDR_REG_IDX:
-            I("st%sx %s, (%s, %s, %d)", SIZE_SUFFIX(i->size),
-              R[i->iops[1]->curloc.reg], R[amod.base], R[amod.offset], i->size);
-            break;
-          }
-        }
-        break;
       case IR_JP:
         if (b->rpo_next != i->bops[0])
           I("jp .B%d", i->ops[0]->id);
         break;
       case IR_BR: {
         const char *opcodes[] = {"bgt", "ble", "beq", "bne", "blt", "bge"};
-        if (i->iops[0]->opc == IR_CONST) {
-          if (i->iops[0]->cval) {
-            if (b->rpo_next != i->bops[1])
-              I("jp .B%d", i->ops[1]->id);
-          } else {
-            if (b->rpo_next != i->bops[2])
-              I("jp .B%d", i->ops[2]->id);
-          }
-        } else {
-          assert(IROPC_ISCMP(i->iops[0]->opc));
-          int cond = gen_cmp(i->iops[0]);
-          use_i(i->iops[0]);
-          if (b->rpo_next != i->bops[1])
-            I("%s .B%d", opcodes[cond], i->ops[1]->id);
-          if (b->rpo_next != i->bops[2])
-            I("%s .B%d", opcodes[cond ^ 1], i->ops[2]->id);
+        assert(IROPC_ISCMP(i->iops[0]->opc));
+        int cond = gen_cmp(i->iops[0]);
+        use_i(i->iops[0]);
+        if (b->rpo_next != i->bops[1])
+          I("%s .B%d", opcodes[cond], i->ops[1]->id);
+        if (b->rpo_next != i->bops[2])
+          I("%s .B%d", opcodes[cond ^ 1], i->ops[2]->id);
+        break;
+      }
+      case IR_SWITCH: {
+        gen_i(i->iops[0]);
+        int tmp = alloc_temp();
+        use_i(i->iops[0]);
+        I("ucmpi %s, %d", R[i->iops[0]->curloc.reg], i->numops - 2);
+        I("bge .B%d", i->ops[1]->id);
+        I("adr %s, .switch_B%d", R[tmp], b->hdr.id);
+        I("ldwx %s, (%s, %s, 4)", R[tmp], R[tmp], R[i->iops[0]->curloc.reg]);
+        I("jpr %s", R[tmp]);
+        L(".switch_B%d:", b->hdr.id);
+        for (int c = 0; c < i->numops - 2; c++) {
+          I("dw .B%d", i->ops[2 + c]->id);
         }
         break;
       }
-      case IR_RET:
-        if (i->iops[0]->curloc.sclass == LOC_UNALLOC) {
-          i->iops[0]->curloc.sclass = LOC_REG;
-          i->iops[0]->curloc.reg = RETREG;
-          gen_i(i->iops[0]);
-        } else {
-          gen_mov(RETREG, &i->iops[0]->curloc);
-        }
-        use_i(i->iops[0]);
-        break;
       default: gen_i(i);
       }
     }
@@ -696,7 +703,7 @@ void ircodegen(IRProgram *p, FILE *out) {
     if (cur_fun->is_leaf)
       usedreg[LRREG] = LOCKED_REG;
     maxsaved = SAVEDSTART - 1;
-    curstack = f->stacksize = 0;
+    cur_fun->stacksize = f->stacksize = 0;
 
     // TODO: handle stack args/ struct args
     if (f->is_leaf) {
@@ -738,7 +745,6 @@ void ircodegen(IRProgram *p, FILE *out) {
     size_t buflen;
     output_file = open_memstream(&buf, &buflen);
 
-    ir_begin_pass((IRValue *) f->entry);
     gen_b(f->entry);
 
     fclose(output_file);
@@ -750,7 +756,7 @@ void ircodegen(IRProgram *p, FILE *out) {
     int spdisp = WORDSIZE * nsaved + f->stacksize;
 
     I("#align 32");
-    P("%s:", f->obj->name);
+    L("%s:", f->obj->name);
     if (save_lr)
       I("stw lr, %d(sp)", -WORDSIZE);
     if (save_fp)
@@ -790,14 +796,14 @@ void ircodegen(IRProgram *p, FILE *out) {
     if (save_lr)
       I("ldw lr, %d(sp)", -WORDSIZE);
     I("ret");
-    P();
+    L();
   }
   for (Obj *g = p->obj; g; g = g->next) {
     if (g->is_function || !g->is_definition)
       continue;
     if (g->align != 1)
       I("#align %d", g->align * 8);
-    P("%s:", g->name);
+    L("%s:", g->name);
     if (g->init_data) {
       Relocation *rel = g->rel;
       if (g->is_string_literal) {

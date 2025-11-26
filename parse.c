@@ -136,7 +136,7 @@ static Node *logor(Token **rest, Token *tok);
 static double eval_double(Node *node);
 static Node *conditional(Token **rest, Token *tok);
 static Node *logand(Token **rest, Token *tok);
-static Node * bitor (Token * *rest, Token *tok);
+static Node *bitor(Token **rest, Token *tok);
 static Node *bitxor(Token **rest, Token *tok);
 static Node *bitand(Token **rest, Token *tok);
 static Node *equality(Token **rest, Token *tok);
@@ -2182,6 +2182,8 @@ static Node *conditional(Token **rest, Token *tok) {
   node->then = expr(&tok, tok->next);
   tok = skip(tok, ":");
   node->els = conditional(rest, tok);
+  add_type(node);
+  node->var = new_lvar("", node->ty);
   return node;
 }
 
@@ -2191,6 +2193,7 @@ static Node *logor(Token **rest, Token *tok) {
   while (equal(tok, "||")) {
     Token *start = tok;
     node = new_binary(ND_LOGOR, node, logand(&tok, tok->next), start);
+    node->var = new_lvar("", ty_int);
   }
   *rest = tok;
   return node;
@@ -2198,17 +2201,18 @@ static Node *logor(Token **rest, Token *tok) {
 
 // logand = bitor ("&&" bitor)*
 static Node *logand(Token **rest, Token *tok) {
-  Node *node = bitor (&tok, tok);
+  Node *node = bitor(&tok, tok);
   while (equal(tok, "&&")) {
     Token *start = tok;
-    node = new_binary(ND_LOGAND, node, bitor (&tok, tok->next), start);
+    node = new_binary(ND_LOGAND, node, bitor(&tok, tok->next), start);
+    node->var = new_lvar("", ty_int);
   }
   *rest = tok;
   return node;
 }
 
 // bitor = bitxor ("|" bitxor)*
-static Node * bitor (Token * *rest, Token *tok) {
+static Node *bitor(Token **rest, Token *tok) {
   Node *node = bitxor(&tok, tok);
   while (equal(tok, "|")) {
     Token *start = tok;
@@ -3211,7 +3215,8 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
   // A buffer for a struct/union return value is passed
   // as the hidden first parameter.
   Type *rty = ty->return_ty;
-  if ((rty->kind == TY_STRUCT || rty->kind == TY_UNION) && rty->size > 16)
+  if ((rty->kind == TY_STRUCT || rty->kind == TY_UNION) &&
+      rty->size > 2 * PTR_SIZE)
     new_lvar("", pointer_to(rty));
 
   fn->params = locals;
@@ -3219,18 +3224,14 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
   if (ty->is_variadic)
     fn->va_area = new_lvar("__va_area__", array_of(ty_char, 136));
   fn->alloca_bottom = new_lvar("__alloca_size__", pointer_to(ty_char));
-  fn->cond_result = new_lvar("__cond_res__", ty_ulong);
 
   tok = skip(tok, "{");
 
   // [https://www.sigbus.info/n1570#6.4.2.2p1] "__func__" is
   // automatically defined as a local variable containing the
   // current function name.
-  push_scope("__func__")->var =
-      new_string_literal(fn->name, array_of(ty_char, strlen(fn->name) + 1));
-  
   // [GNU] __FUNCTION__ is yet another name of __func__.
-  push_scope("__FUNCTION__")->var =
+  push_scope("__func__")->var = push_scope("__FUNCTION__")->var =
       new_string_literal(fn->name, array_of(ty_char, strlen(fn->name) + 1));
 
   fn->body = compound_stmt(&tok, tok);
@@ -3263,6 +3264,27 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr) {
       gvar_initializer(&tok, tok->next, var);
     else if (!attr->is_extern && !attr->is_tls)
       var->is_tentative = true;
+  }
+  return tok;
+}
+
+static Token *parse_static_assert(Token *tok) {
+  tok = skip(tok->next, "(");
+  Token *etok = tok;
+  uint64_t x = const_expr(&tok, tok);
+  const char *m = "";
+  if (equal(tok, ",")) {
+    if (tok->next->kind == TK_STR) {
+      m = tok->next->str;
+      tok = tok->next->next;
+    } else {
+      error_tok(tok->next, "invalid message");
+    }
+  }
+  tok = skip(tok, ")");
+  tok = skip(tok, ";");
+  if (!x) {
+    error_tok(etok, "static assert failed: %s", m);
   }
   return tok;
 }
@@ -3318,6 +3340,11 @@ Obj *parse(Token *tok) {
   globals = NULL;
 
   while (tok->kind != TK_EOF) {
+    if (equal(tok, "_Static_assert")) {
+      tok = parse_static_assert(tok);
+      continue;
+    }
+
     VarAttr attr = {};
     Type *basety = declspec(&tok, tok, &attr);
 
@@ -3343,5 +3370,15 @@ Obj *parse(Token *tok) {
 
   // Remove redundant tentative definitions.
   scan_globals();
-  return globals;
+
+  // reverse globals
+  Obj *rev = NULL;
+  while (globals) {
+    Obj *n = globals;
+    globals = globals->next;
+    n->next = rev;
+    rev = n;
+  }
+
+  return rev;
 }

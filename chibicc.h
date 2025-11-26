@@ -1,6 +1,7 @@
 #pragma once
 
 #define _POSIX_C_SOURCE 200809L
+#include <alloca.h>
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
@@ -162,7 +163,6 @@ struct Obj {
   Obj *locals;
   Obj *va_area;
   Obj *alloca_bottom;
-  Obj *cond_result; // for ?:/&&/||
   int stack_size;
 
   // Static inline function

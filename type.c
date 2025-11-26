@@ -282,6 +282,7 @@ void add_type(Node *node) {
         return;
       }
     }
+    node->ty = ty_void;
     //error_tok(node->tok, "statement expression returning void is not supported");
     return;
   case ND_LABEL_VAL:

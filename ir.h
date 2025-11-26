@@ -46,6 +46,7 @@ typedef enum {
   // terminators
   IR_JP,
   IR_BR,
+  IR_SWITCH,
 
   IR_MAX
 } IROpc;
@@ -99,7 +100,7 @@ typedef struct IRUser IRUser;
 struct IRValue {
   int vt;
   int id;
-  bool visited;
+  bool mark;
   int numuses;
   IRUser *uses;
 };
@@ -111,6 +112,7 @@ struct IRUser {
   IRUser *next;
   IRInstr *user;
   int idx;
+  bool loop;
 };
 
 struct IRInstr {
@@ -142,9 +144,13 @@ struct IRBlock {
   bool is_entry;
   bool is_exit;
 
-  bool is_post_loop;
+  bool start_loop;
+  bool post_loop;
 
   IRBlock *rpo_next;
+  IRBlock *idom;
+
+  int tmp;
 };
 
 typedef struct IRFunction IRFunction;
@@ -170,30 +176,30 @@ void ir_add_instr(IRBlock *b, IRInstr *i);
 void ir_insert_instr(IRInstr *before, IRInstr *i);
 void ir_remove_instr(IRInstr *i);
 void ir_erase_instr(IRInstr *i);
+void ir_erase_block(IRBlock *b);
 void ir_set_op(IRInstr *i, int op, IRValue *v);
 void ir_remove_user(IRValue *v, IRInstr *u, int op);
 IRValue *ir_replace(IRValue *old, IRValue *new);
 void ir_merge_block(IRBlock *base, IRBlock *extra);
+void ir_reset_marks(IRValue *v);
 
 IRInstr *ir_instr(int numops);
 IRInstr *ir_const(uint64_t val);
+IRInstr *ir_varptr(Obj *var);
 IRInstr *ir_unary(IROpc opc, IRInstr *lhs);
 IRInstr *ir_binary(IROpc opc, IRInstr *lhs, IRInstr *rhs);
-IRInstr *ir_varptr(Obj *var);
-IRInstr *ir_load(Type *ty, IRInstr *addr);
-IRInstr *ir_store(Type *ty, IRInstr *addr, IRInstr *data);
-IRInstr *ir_bitfield(IROpc opc, IRInstr *src, IRInstr *dst, int start, int len);
-IRInstr *ir_cast(IRInstr *src, Type *from, Type *to);
+IRInstr *ir_extend(IROpc opc, IRInstr *src, int size);
 IRInstr *ir_call(IRInstr *f, int nargs, IRInstr **args);
 IRInstr *ir_ret(IRInstr *lhs);
-IRInstr *ir_branch(IRInstr *cond, IRBlock *bt, IRBlock *bf);
+IRInstr *ir_load(Type *ty, IRInstr *addr);
+IRInstr *ir_store(Type *ty, IRInstr *addr, IRInstr *data);
 IRInstr *ir_jump(IRBlock *dst);
+IRInstr *ir_branch(IRInstr *cond, IRBlock *bt, IRBlock *bf);
+IRInstr *ir_switch(IRInstr *cond, IRBlock *dfl, int ncase, IRBlock **cases);
 
 IRProgram *irgen(Obj *p);
 void irprint(IRProgram *p, FILE *out);
 void ircodegen(IRProgram *p, FILE *out);
-
-void ir_begin_pass(IRValue *v);
 
 #define IRB_ITER(i, b)                                                         \
   for (IRInstr *i = (b)->root.next, *_next = i->next; i != &(b)->root;         \
@@ -201,6 +207,66 @@ void ir_begin_pass(IRValue *v);
 #define IRB_FIRST(b) ((b)->root.next)
 #define IRB_LAST(b) ((b)->root.prev)
 #define IRB_ISEMPTY(b) ((b)->root.next == &(b)->root)
+#define IRB_PREDS(it, _b)                                                      \
+  for (struct {                                                                \
+         IRUser *u;                                                            \
+         IRBlock *b;                                                           \
+       } it = {(_b)->hdr.uses};                                                \
+       it.u && (it.b = it.u->user->parent, true); it.u = it.u->next)
+#define IRB_SUCCS(it, b) IRI_ITERB(it, IRB_LAST(b))
+#define IRB_SUCCS_R(it, b) IRI_ITERB_R(it, IRB_LAST(b))
+#define IRI_ITER(it, _i)                                                       \
+  for (struct {                                                                \
+         int idx;                                                              \
+         IRValue *v;                                                           \
+       } it = {0};                                                             \
+       it.idx < (_i)->numops && (it.v = (_i)->ops[it.idx], true); it.idx++)
+#define IRI_ITERI(it, _i)                                                      \
+  for (                                                                        \
+      struct {                                                                 \
+        int _idx;                                                              \
+        IRInstr *i;                                                            \
+      } it = {0};                                                              \
+      ({                                                                       \
+        while (it._idx < (_i)->numops) {                                       \
+          if ((it.i = (_i)->iops[it._idx])->hdr.vt == IRV_INSTR)               \
+            break;                                                             \
+          it._idx++;                                                           \
+        }                                                                      \
+      }),                                                                      \
+        it._idx < (_i)->numops;                                                \
+      it._idx++)
+#define IRI_ITERB(it, _i)                                                      \
+  for (                                                                        \
+      struct {                                                                 \
+        int _idx;                                                              \
+        IRBlock *b;                                                            \
+      } it = {0};                                                              \
+      ({                                                                       \
+        while (it._idx < (_i)->numops) {                                       \
+          if ((it.b = (_i)->bops[it._idx])->hdr.vt == IRV_BLOCK)               \
+            break;                                                             \
+          it._idx++;                                                           \
+        }                                                                      \
+      }),                                                                      \
+        it._idx < (_i)->numops;                                                \
+      it._idx++)
+#define IRI_ITERB_R(it, _i)                                                    \
+  for (                                                                        \
+      struct {                                                                 \
+        int _idx;                                                              \
+        IRBlock *b;                                                            \
+      } it = {(_i)->numops - 1};                                               \
+      ({                                                                       \
+        while (it._idx >= 0) {                                                 \
+          if ((it.b = (_i)->bops[it._idx])->hdr.vt == IRV_BLOCK)               \
+            break;                                                             \
+          it._idx--;                                                           \
+        }                                                                      \
+      }),                                                                      \
+        it._idx >= 0;                                                          \
+      it._idx--)
 
 void irpass_opt_cfg(IRFunction *f);
 void irpass_constant_fold(IRFunction *f);
+void irpass_dce(IRFunction *f);

@@ -1,24 +1,12 @@
 #include "ir.h"
 #include "irpass.h"
 
-bool irinstr_has_side_effect(IRInstr *i) {
-  return IROPC_ISTERM(i->opc) || i->opc == IR_RET || i->opc == IR_STORE ||
-         i->opc == IR_MEMCPY || i->opc == IR_CALL || i->opc == IR_RET ||
-         (i->opc == IR_LOAD && i->is_volatile);
-}
-
-bool irinstr_isdead(IRInstr *i) {
-  if (irinstr_has_side_effect(i))
-    return false;
-  return i->hdr.numuses == 0;
-}
-
 BPASS_BEGIN(opt_cfg)
   if (b->is_exit)
     return;
   bool found_term = false;
   IRB_ITER(i, b) {
-    if (found_term || irinstr_isdead(i)) {
+    if (found_term) {
       ir_erase_instr(i);
     } else if (IROPC_ISTERM(i->opc))
       found_term = true;
@@ -49,10 +37,7 @@ BPASS_BEGIN(opt_cfg)
 
   if (!b->is_entry && IRB_FIRST(b) == IRB_LAST(b) &&
       IRB_LAST(b)->opc == IR_JP) {
-    bool post_loop = b->is_post_loop;
     b = (IRBlock *) ir_replace((IRValue *) b, (IRValue *) IRB_LAST(b)->bops[0]);
-    if (post_loop)
-      b->is_post_loop = true;
   }
 
 BPASS_END(opt_cfg)
@@ -248,3 +233,21 @@ IPASS_BEGIN(constant_fold)
 
   IPASS_BBEGIN(constant_fold)
 IPASS_END(constant_fold)
+
+bool irinstr_has_side_effect(IRInstr *i) {
+  return IROPC_ISTERM(i->opc) || i->opc == IR_RET || i->opc == IR_STORE ||
+         i->opc == IR_MEMCPY || i->opc == IR_CALL || i->opc == IR_RET ||
+         (i->opc == IR_LOAD && i->is_volatile);
+}
+
+bool irinstr_isdead(IRInstr *i) {
+  if (irinstr_has_side_effect(i))
+    return false;
+  return i->hdr.numuses == 0;
+}
+
+IPASS_BEGIN(dce)
+  if (irinstr_isdead(i))
+    ir_erase_instr(i);
+  IPASS_BBEGIN(dce)
+IPASS_END(dce)

@@ -15,6 +15,16 @@ static struct GotoNode {
   struct GotoNode *next;
 } *gotos;
 
+static struct SwitchCase {
+  Node *sw;
+  int curcase;
+  IRBlock *dfl;
+  struct {
+    int begin, end;
+    IRBlock *b;
+  } cases[];
+} *curswitch;
+
 static void add_label(const char *label, IRBlock *b) {
   struct LabelNode *n = malloc(sizeof *n);
   n->b = b;
@@ -105,11 +115,11 @@ IRInstr *ir_varptr(Obj *var) {
 IRInstr *ir_load(Type *ty, IRInstr *addr) {
   switch (ty->kind) {
   case TY_ARRAY:
-  case TY_STRUCT:
-  case TY_UNION:
   case TY_FUNC:
   case TY_VLA: return addr;
   }
+  if (ty->size > PTR_SIZE)
+    return addr;
   IRInstr *i = ir_instr(1);
   i->opc = IR_LOAD;
   ir_set_op(i, 0, (IRValue *) addr);
@@ -120,11 +130,10 @@ IRInstr *ir_load(Type *ty, IRInstr *addr) {
 
 IRInstr *ir_store(Type *ty, IRInstr *addr, IRInstr *data) {
   IRInstr *i = ir_instr(2);
-  switch (ty->kind) {
-  case TY_STRUCT:
-  case TY_UNION: i->opc = IR_MEMCPY; break;
-  default: i->opc = IR_STORE; break;
-  }
+  if (ty->size > PTR_SIZE)
+    i->opc = IR_MEMCPY;
+  else
+    i->opc = IR_STORE;
   ir_set_op(i, 0, (IRValue *) addr);
   ir_set_op(i, 1, (IRValue *) data);
   i->size = ty->size;
@@ -170,6 +179,19 @@ IRInstr *ir_jump(IRBlock *dst) {
   IRInstr *i = ir_instr(1);
   i->opc = IR_JP;
   ir_set_op(i, 0, (IRValue *) dst);
+  return i;
+}
+
+IRInstr *ir_switch(IRInstr *cond, IRBlock *dfl, int ncase, IRBlock **cases) {
+  IRInstr *i = ir_instr(2 + ncase);
+  i->opc = IR_SWITCH;
+  ir_set_op(i, 0, (IRValue *) cond);
+  ir_set_op(i, 1, (IRValue *) dfl);
+  // jumps to case n if cond == n, so cases are always contiguous and start at 0
+  // so dont need to store compare value for each case
+  for (int c = 0; c < ncase; c++) {
+    ir_set_op(i, 2 + c, (IRValue *) cases[c]);
+  }
   return i;
 }
 
@@ -223,7 +245,7 @@ static IRInstr *gen_expr(Node *e) {
   case ND_NULL_EXPR: return ir_const(0);
   case ND_NUM: return ir_const(e->val);
   case ND_NEG: return ir_unary(IR_NEG, gen_expr(e->lhs));
-  case ND_VAR: return ir_load(e->ty, gen_addr(e));
+  case ND_VAR: return ir_load(e->var->ty, gen_addr(e));
   case ND_MEMBER: {
     IRInstr *addr = gen_addr(e);
     IRInstr *res = ir_load(e->ty, addr);
@@ -255,63 +277,63 @@ static IRInstr *gen_expr(Node *e) {
   }
   case ND_STMT_EXPR: printf("stubbed: stmt expr\n"); return ir_const(0); // TODO
   case ND_COMMA: add_instr(gen_expr(e->lhs)); return gen_expr(e->rhs);
-  case ND_CAST:
-    if (e->lhs->ty->size >= e->ty->size || e->lhs->ty->kind == TY_ARRAY)
+  case ND_CAST: {
+    int effectivesize = e->lhs->ty->size;
+    switch (e->lhs->ty->kind) {
+    case TY_FUNC:
+    case TY_ARRAY:
+    case TY_VLA: effectivesize = PTR_SIZE;
+    }
+    if (effectivesize >= e->ty->size)
       return gen_expr(e->lhs);
     return ir_extend(e->lhs->ty->is_unsigned ? IR_UEXT : IR_SEXT,
-                     gen_expr(e->lhs), e->lhs->ty->size);
+                     gen_expr(e->lhs), effectivesize);
+  }
   case ND_MEMZERO: printf("stubbed: memzero\n"); return ir_const(0); // TODO
   case ND_LOGAND: {
     IRBlock *bt = new_block();
     IRBlock *post = new_block();
-    add_instr(
-        ir_store(ty_int, ir_varptr(cur_fun->obj->cond_result), ir_const(0)));
+    add_instr(ir_store(ty_int, ir_varptr(e->var), ir_const(0)));
     gen_condbr(e->lhs, bt, post);
 
     cur_block = bt;
-    add_instr(ir_store(ty_int, ir_varptr(cur_fun->obj->cond_result),
+    add_instr(ir_store(ty_int, ir_varptr(e->var),
                        ir_binary(IR_NE, gen_expr(e->rhs), ir_const(0))));
     add_instr(ir_jump(post));
 
     cur_block = post;
-    return ir_load(ty_int, ir_varptr(cur_fun->obj->cond_result));
+    return ir_load(ty_int, ir_varptr(e->var));
   }
   case ND_LOGOR: {
     IRBlock *bf = new_block();
     IRBlock *post = new_block();
-    add_instr(
-        ir_store(ty_int, ir_varptr(cur_fun->obj->cond_result), ir_const(1)));
+    add_instr(ir_store(ty_int, ir_varptr(e->var), ir_const(1)));
     gen_condbr(e->lhs, post, bf);
 
     cur_block = bf;
-    add_instr(ir_store(ty_int, ir_varptr(cur_fun->obj->cond_result),
+    add_instr(ir_store(ty_int, ir_varptr(e->var),
                        ir_binary(IR_NE, gen_expr(e->rhs), ir_const(0))));
     add_instr(ir_jump(post));
 
     cur_block = post;
-    return ir_load(ty_int, ir_varptr(cur_fun->obj->cond_result));
+    return ir_load(ty_int, ir_varptr(e->var));
   }
   case ND_COND: {
-    if (e->ty->kind == TY_STRUCT || e->ty->kind == TY_UNION)
-      return ir_const(0); // TODO
-
     IRBlock *bt = new_block();
     IRBlock *bf = new_block();
     IRBlock *post = new_block();
     gen_condbr(e->cond, bt, bf);
 
     cur_block = bt;
-    add_instr(ir_store(e->ty, ir_varptr(cur_fun->obj->cond_result),
-                       gen_expr(e->then)));
+    add_instr(ir_store(e->ty, ir_varptr(e->var), gen_expr(e->then)));
     add_instr(ir_jump(post));
 
     cur_block = bf;
-    add_instr(ir_store(e->ty, ir_varptr(cur_fun->obj->cond_result),
-                       gen_expr(e->els)));
+    add_instr(ir_store(e->ty, ir_varptr(e->var), gen_expr(e->els)));
     add_instr(ir_jump(post));
 
     cur_block = post;
-    return ir_load(e->ty, ir_varptr(cur_fun->obj->cond_result));
+    return ir_load(e->ty, ir_varptr(e->var));
   }
   case ND_NOT: return ir_binary(IR_EQ, gen_expr(e->lhs), ir_const(0));
   case ND_BITNOT: return ir_unary(IR_NOT, gen_expr(e->lhs));
@@ -358,6 +380,36 @@ static IRInstr *gen_expr(Node *e) {
   error_tok(e->tok, "invalid expression");
 }
 
+static int compare_cases(typeof(*curswitch->cases) *a,
+                         typeof(*curswitch->cases) *b) {
+  return a->begin - b->begin;
+}
+
+static void gen_switch(IRInstr *cond, int starti, int endi) {
+  int begin = curswitch->cases[starti].begin;
+  int end = curswitch->cases[endi].end;
+  int ncase = end + 1 - begin;
+  IRBlock *cases[ncase];
+  for (int i = starti; i <= endi; i++) {
+    typeof(*curswitch->cases) *c = &curswitch->cases[i];
+    if (i > starti) {
+      for (int j = c[-1].end + 1; j < c->begin; j++) {
+        cases[j - begin] = curswitch->dfl;
+      }
+    }
+    for (int j = c->begin; j <= c->end; j++) {
+      cases[j - begin] = c->b;
+    }
+  }
+
+  IRBlock *nextblock = new_block();
+  add_instr(ir_switch(ir_binary(IR_SUB, cond, ir_const(begin)), nextblock,
+                      ncase, cases));
+
+  cur_block = nextblock;
+  return;
+}
+
 static void gen_stmt(Node *s) {
   switch (s->kind) {
   case ND_IF: {
@@ -385,7 +437,6 @@ static void gen_stmt(Node *s) {
     IRBlock *body = new_block();
     IRBlock *cont = new_block();
     IRBlock *post = new_block();
-    post->is_post_loop = true;
     add_instr(ir_jump(cond));
 
     cur_block = cond;
@@ -413,7 +464,6 @@ static void gen_stmt(Node *s) {
     IRBlock *body = new_block();
     IRBlock *cond = new_block();
     IRBlock *post = new_block();
-    post->is_post_loop = true;
     add_instr(ir_jump(body));
 
     cur_block = body;
@@ -428,13 +478,84 @@ static void gen_stmt(Node *s) {
     add_label(s->brk_label, post);
     return;
   }
-  case ND_SWITCH:
-  case ND_CASE: printf("stubbed: switch/case\n"); return; // TODO
+  case ND_SWITCH: {
+    IRBlock *body = new_block();
+    IRBlock *post = new_block();
+    IRBlock *start = cur_block;
+
+    int ncase = 0;
+    for (Node *c = s->case_next; c; c = c->case_next, ncase++)
+      ;
+    struct SwitchCase *old = curswitch;
+    curswitch = alloca(sizeof *curswitch + ncase * sizeof *curswitch->cases);
+    curswitch->sw = s;
+    curswitch->curcase = 0;
+    curswitch->dfl = post;
+
+    cur_block = body;
+    gen_stmt(s->then);
+    add_instr(ir_jump(post));
+
+    cur_block = start;
+    IRInstr *e = gen_expr(s->cond);
+
+    qsort(curswitch->cases, ncase, sizeof *curswitch->cases,
+          (__compar_fn_t) compare_cases);
+
+    int rangestart = 0;
+    for (int ci = 0; ci < ncase; ci++) {
+      typeof(*curswitch->cases) *c = &curswitch->cases[ci];
+      if (c->end < c->begin)
+        continue;
+      if (ci > rangestart && c->begin - (c[-1].end + 1) > 64) {
+        gen_switch(e, rangestart, ci - 1);
+        rangestart = ci;
+      }
+      if (c->end + 1 - c->begin > 64) {
+        if (ci > rangestart)
+          gen_switch(e, rangestart, ci - 1);
+        IRBlock *b = new_block();
+        add_instr(ir_branch(ir_binary(IR_ULE,
+                                      ir_binary(IR_SUB, e, ir_const(c->begin)),
+                                      ir_const(c->end - c->begin)),
+                            c->b, b));
+        cur_block = b;
+        rangestart = ci + 1;
+      }
+    }
+
+    if (rangestart < ncase)
+      gen_switch(e, rangestart, ncase - 1);
+
+    add_instr(ir_jump(curswitch->dfl));
+
+    curswitch = old;
+    cur_block = post;
+    add_label(s->brk_label, post);
+    ir_erase_block(body);
+    return;
+  }
+  case ND_CASE: {
+    IRBlock *nextblock = new_block();
+    add_instr(ir_jump(nextblock));
+    cur_block = nextblock;
+    gen_stmt(s->lhs);
+
+    if (s == curswitch->sw->default_case)
+      curswitch->dfl = nextblock;
+    else {
+      curswitch->cases[curswitch->curcase].begin = s->begin;
+      curswitch->cases[curswitch->curcase].end = s->end;
+      curswitch->cases[curswitch->curcase].b = nextblock;
+      curswitch->curcase++;
+    }
+    return;
+  }
   case ND_GOTO: {
     IRInstr *gotoinst = ir_jump(NULL);
     add_goto(s->unique_label, gotoinst);
     add_instr(gotoinst);
-    break;
+    return;
   }
   case ND_LABEL: {
     IRBlock *nextblock = new_block();
@@ -442,7 +563,7 @@ static void gen_stmt(Node *s) {
     cur_block = nextblock;
     add_label(s->unique_label, nextblock);
     gen_stmt(s->lhs);
-    break;
+    return;
   }
   case ND_GOTO_EXPR: printf("stubbed: goto expr\n"); return; // TODO
   case ND_BLOCK:
