@@ -500,7 +500,7 @@ static void gen_stmt(Node *s) {
     IRInstr *e = gen_expr(s->cond);
 
     qsort(curswitch->cases, ncase, sizeof *curswitch->cases,
-          (__compar_fn_t) compare_cases);
+          (void*) compare_cases);
 
     int rangestart = 0;
     for (int ci = 0; ci < ncase; ci++) {
