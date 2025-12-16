@@ -244,10 +244,10 @@ static int gen_cmp(IRInstr *i) {
   use_i(i->iops[1]);
   const char *opcode = "";
   switch (i->opc) {
-  case IR_EQ:
-  case IR_NE:
   case IR_ULT:
   case IR_ULE: opcode = "ucmp"; break;
+  case IR_EQ:
+  case IR_NE:
   case IR_SLT:
   case IR_SLE: opcode = "scmp"; break;
   }
@@ -384,7 +384,7 @@ static void gen_i(IRInstr *i) {
   case IR_ADD:
   case IR_SUB: {
     const char *opcode = (i->opc == IR_ADD) ? "add" : "sub";
-    if (i->iops[1]->opc == IR_CONST && is_valid_aimm16(i->iops[1]->cval)) {
+    if (i->iops[1]->opc == IR_CONST) {
       gen_i(i->iops[0]);
       use_i(i->iops[0]);
       use_i(i->iops[1]);
@@ -408,7 +408,7 @@ static void gen_i(IRInstr *i) {
     const char *opcode = (i->opc == IR_AND)  ? "and"
                          : (i->opc == IR_OR) ? "or"
                                              : "xor";
-    if (i->iops[1]->opc == IR_CONST && is_valid_limm16(i->iops[1]->cval)) {
+    if (i->iops[1]->opc == IR_CONST) {
       gen_i(i->iops[0]);
       use_i(i->iops[0]);
       use_i(i->iops[1]);
@@ -645,15 +645,19 @@ static void gen_b(IRBlock *b) {
       case IR_SWITCH: {
         gen_i(i->iops[0]);
         int tmp = alloc_temp();
+        usedreg[tmp] = LOCKED_REG;
+        int tmp2 = alloc_temp();
+        usedreg[tmp] = NULL;
         use_i(i->iops[0]);
         I("ucmpi %s, %d", R[i->iops[0]->curloc.reg], i->numops - 2);
         I("bge .B%d", i->ops[1]->id);
         I("adr %s, .switch_B%d", R[tmp], b->hdr.id);
-        I("ldwx %s, (%s, %s, 4)", R[tmp], R[tmp], R[i->iops[0]->curloc.reg]);
+        I("ldwx %s, (%s, %s, 4)", R[tmp2], R[tmp], R[i->iops[0]->curloc.reg]);
+        I("add %s, %s, %s", R[tmp], R[tmp], R[tmp2]);
         I("jpr %s", R[tmp]);
         L(".switch_B%d:", b->hdr.id);
         for (int c = 0; c < i->numops - 2; c++) {
-          I("dw .B%d", i->ops[2 + c]->id);
+          I(".word .B%d-.switch_B%d", i->ops[2 + c]->id, b->hdr.id);
         }
         break;
       }
@@ -755,7 +759,9 @@ void ircodegen(IRProgram *p, FILE *out) {
     int nsaved = save_lr + save_fp + maxsaved - SAVEDSTART + 1;
     int spdisp = WORDSIZE * nsaved + f->stacksize;
 
-    I("#align 32");
+    I(".align 4");
+    if (!f->obj->is_static)
+      I(".global %s", f->obj->name);
     L("%s:", f->obj->name);
     if (save_lr)
       I("stw lr, %d(sp)", -WORDSIZE);
@@ -802,31 +808,33 @@ void ircodegen(IRProgram *p, FILE *out) {
     if (g->is_function || !g->is_definition)
       continue;
     if (g->align != 1)
-      I("#align %d", g->align * 8);
+      I(".align %d", g->align);
+    if (!g->is_static)
+      I(".global %s", g->name);
     L("%s:", g->name);
     if (g->init_data) {
       Relocation *rel = g->rel;
       if (g->is_string_literal) {
         char *esc = escape_string_lit(g->init_data);
-        I("ds \"%s\"", esc);
+        I(".string \"%s\"", esc);
         free(esc);
       } else {
         int pos = 0;
         while (pos < g->ty->size) {
           if (rel && rel->offset == pos) {
-            I("dw %s%+ld", *rel->label, rel->addend);
+            I(".word %s%+ld", *rel->label, rel->addend);
             rel = rel->next;
             pos += WORDSIZE;
           } else if (g->ty->size - pos >= WORDSIZE) {
-            I("dw %#x", *(uint32_t *) &g->init_data[pos]);
+            I(".word %#x", *(uint32_t *) &g->init_data[pos]);
             pos += WORDSIZE;
           } else {
-            I("db %#x", g->init_data[pos++]);
+            I(".byte %#x", g->init_data[pos++]);
           }
         }
       }
     } else {
-      I("#res %#x", g->ty->size);
+      I(".res %d", g->ty->size);
     }
   }
 }
